@@ -1,1 +1,0 @@
-C:\Workspace\QA\codex_usage_widget\codex_widget_provider\AppPackages\CodexUsageWidgetProvider_1.1.8.0_x64_Test\CodexUsageWidgetProvider_1.1.8.0_x64.msix

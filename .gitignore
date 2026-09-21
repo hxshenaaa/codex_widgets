@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.manifest
+*.spec
+
+# Environments & Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# SQLite databases & Local runtime data
+*.sqlite3
+*.sqlite3-journal
+*.db
+*.db-journal
+
+# .NET / C# / MSBuild
+[Bb]in/
+[Oo]bj/
+AppPackages/
+BundleArtifacts/
+PackagePackages/
+_ReSharper*/
+*.DotSettings.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.pdb
+*.cache
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+
+# Certificates (optional/sensitive)
+*.pfx
+
+# CLI & Assistant local state
+.codely-cli/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating System files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
