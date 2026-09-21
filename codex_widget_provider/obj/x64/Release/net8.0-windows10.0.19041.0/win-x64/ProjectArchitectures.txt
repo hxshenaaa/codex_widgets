@@ -1,0 +1,1 @@
+C:\Workspace\QA\codex_usage_widget\codex_widget_provider\CodexUsageWidgetProvider.csproj;x64

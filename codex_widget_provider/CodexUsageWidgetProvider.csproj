@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RootNamespace>CodexUsageWidgetProvider</RootNamespace>
+    <AssemblyName>CodexUsageWidgetProvider</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>x64</Platforms>
+    <Version>1.1.8</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- probe\ is a standalone console project sharing two source files -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);probe\**</DefaultItemExcludes>
+
+    <!-- Single-project MSIX packaging (Windows App SDK) -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>MSIX</WindowsPackageType>
+    <!-- Signing is enabled at build time with -p:AppxPackageSigningEnabled=true -->
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.12" />
+    <!-- WinAppSdkGenerateAppxManifest task needs this assembly when building with dotnet CLI -->
+    <PackageReference Include="System.Security.Permissions" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\**\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ProviderAssets\**\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Public\**\*.*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
