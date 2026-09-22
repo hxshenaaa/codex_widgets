@@ -8,7 +8,7 @@
     <RootNamespace>CodexUsageWidgetProvider</RootNamespace>
     <AssemblyName>CodexUsageWidgetProvider</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <Platforms>x64</Platforms>
+    <Platforms>x86;x64;arm64</Platforms>
     <Version>1.1.8</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

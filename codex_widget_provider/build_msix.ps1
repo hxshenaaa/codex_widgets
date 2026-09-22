@@ -1,6 +1,11 @@
 # Creates (once) a local self-signed code signing cert matching the package
 # identity publisher (CN=CodexUsageWidgetDev), trusts it for the current user,
 # then publishes the signed MSIX for sideloading.
+param(
+    [ValidateSet('x64', 'x86', 'arm64')]
+    [string]$Architecture = 'x64'
+)
+
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
@@ -10,11 +15,16 @@ $cerPath = Join-Path $root 'CodexUsageWidgetDev.cer'
 $password = 'CodexUsageWidget!2026'
 $securePw = ConvertTo-SecureString $password -AsPlainText -Force
 
-if (-not (Test-Path $pfxPath)) {
-    $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation 'Cert:\CurrentUser\My'
-    Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $securePw | Out-Null
-    Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
-    Write-Host "Created self-signed cert: $subject"
+if (-not (Get-ChildItem 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $subject })) {
+    if (Test-Path $pfxPath) {
+        Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password $securePw | Out-Null
+        Write-Host "Imported existing cert from $pfxPath into Cert:\CurrentUser\My"
+    } else {
+        $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation 'Cert:\CurrentUser\My'
+        Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $securePw | Out-Null
+        Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
+        Write-Host "Created self-signed cert: $subject"
+    }
 }
 
 if (-not (Test-Path $cerPath)) {
@@ -26,11 +36,15 @@ if (-not (Test-Path $cerPath)) {
 Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
 Write-Host 'Cert trusted in Cert:\CurrentUser\TrustedPeople'
 
-# Machine-level trust is what Add-AppxPackage actually checks; needed once per
-# machine. Shows a UAC prompt.
+# Machine-level trust is what Add-AppxPackage actually checks; needed once per machine.
 if (-not (Get-ChildItem 'Cert:\LocalMachine\TrustedPeople' -ErrorAction SilentlyContinue | Where-Object Subject -eq $subject)) {
-    Write-Host 'Installing cert to Cert:\LocalMachine\TrustedPeople (approve the UAC prompt)...'
-    Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-Command',"Import-Certificate -FilePath '$cerPath' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null"
+    try {
+        Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' -ErrorAction Stop | Out-Null
+        Write-Host 'Cert trusted in Cert:\LocalMachine\TrustedPeople'
+    } catch {
+        Write-Host 'Installing cert to Cert:\LocalMachine\TrustedPeople (approve the UAC prompt)...'
+        Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-Command',"Import-Certificate -FilePath '$cerPath' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null"
+    }
 }
 
 # Sign with the cert thumbprint from the user's personal store.
@@ -42,7 +56,7 @@ $project = Join-Path $root 'CodexUsageWidgetProvider.csproj'
 $appxDir = Join-Path $root 'AppPackages'
 
 dotnet publish $project `
-    -c Release -r win-x64 -p:Platform=x64 `
+    -c Release -r win-$Architecture -p:Platform=$Architecture `
     '-p:PublishAppxPackage=true' `
     '-p:UapAppxPackageBuildMode=SideloadOnly' `
     '-p:AppxBundle=Never' `

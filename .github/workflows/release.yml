@@ -1,0 +1,80 @@
+name: Release Build & Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build, Package and Prepare Assets for All Architectures
+        shell: pwsh
+        run: |
+          $releaseDir = "dist_release"
+          if (Test-Path $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
+          New-Item -ItemType Directory -Path $releaseDir | Out-Null
+
+          $architectures = @('x64', 'x86', 'arm64')
+
+          foreach ($arch in $architectures) {
+              Write-Host "=========================================="
+              Write-Host "Building and Packaging for architecture: $arch"
+              Write-Host "=========================================="
+
+              Push-Location codex_widget_provider
+              try {
+                  .\build_msix.ps1 -Architecture $arch
+              } finally {
+                  Pop-Location
+              }
+
+              $testDir = Get-ChildItem -Directory "codex_widget_provider\AppPackages\*_$($arch)_Test" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if (-not $testDir) {
+                  throw "Could not find build output directory for $arch in codex_widget_provider\AppPackages"
+              }
+              Write-Host "Found build output: $($testDir.FullName)"
+
+              $tempPkg = "$releaseDir\temp_pkg_$arch"
+              New-Item -ItemType Directory -Path $tempPkg | Out-Null
+              Copy-Item "$($testDir.FullName)\*.msix" $tempPkg
+              Copy-Item "$($testDir.FullName)\*.cer" $tempPkg
+              Copy-Item "$($testDir.FullName)\Install.ps1" $tempPkg
+              Copy-Item "$($testDir.FullName)\Add-AppDevPackage.ps1" $tempPkg
+              Copy-Item -Recurse "$($testDir.FullName)\Add-AppDevPackage.resources" $tempPkg
+
+              $zipPath = "$releaseDir\CodexUsageWidget-$arch.zip"
+              Compress-Archive -Path "$tempPkg\*" -DestinationPath $zipPath -CompressionLevel Optimal
+              Remove-Item -Recurse -Force $tempPkg
+
+              Write-Host "Successfully generated: $zipPath"
+          }
+
+          Write-Host ""
+          Write-Host "All generated release artifacts in $releaseDir:"
+          Get-ChildItem $releaseDir | Select-Object Name, Length
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist_release/CodexUsageWidget-x64.zip
+            dist_release/CodexUsageWidget-x86.zip
+            dist_release/CodexUsageWidget-arm64.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

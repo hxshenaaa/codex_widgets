@@ -27,6 +27,8 @@ venv.bak/
 AppPackages/
 BundleArtifacts/
 PackagePackages/
+dist_release/
+*.zip
 _ReSharper*/
 *.DotSettings.user
 *.suo
