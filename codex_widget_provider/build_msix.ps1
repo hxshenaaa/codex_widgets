@@ -9,6 +9,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
+# Always package assets exported to the dimensions expected by Windows.
+& (Join-Path $root 'gen_assets.ps1')
+
 $subject = 'CN=CodexUsageWidgetDev'
 $pfxPath = Join-Path $root 'CodexUsageWidgetDev.pfx'
 $cerPath = Join-Path $root 'CodexUsageWidgetDev.cer'

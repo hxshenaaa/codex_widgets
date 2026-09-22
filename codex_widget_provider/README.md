@@ -77,7 +77,9 @@ dotnet run --project .\probe -c Release
 | `CodexAppServerClient.cs` | codex app-server 的 JSONL 客户端（`find_codex` 查找顺序的 C# 移植） |
 | `CodexUsageService.cs` | 快照选择/格式化（与 Python 版对齐）、数据模型、30 天历史采样与序列导出 |
 | `Package.appxmanifest` | COM ExeServer + `com.microsoft.windows.widgets` 扩展 + `WebRequestFilter` 注册 |
-| `gen_assets.ps1` | GDI+ 生成应用图标与小组件选择器截图 |
+| `DesignAssets/CodexUsageIcon.png` | 蓝色用量柱形图标的高分辨率原稿 |
+| `DesignAssets/CodexUsagePreview.png` | 小组件选择器预览图原稿（底部信息完整保留） |
+| `gen_assets.ps1` | 导出 44/48/50/150 像素图标和 300×304 选择器预览图；等比缩放，不裁剪 |
 | `build_msix.ps1` | 证书 + 签名打包一条龙 |
 | `probe\` | 数据链路自检工具（`dotnet run --project .\probe -c Release`；`page <dir>` 导出页面 + 无头浏览器测试文件） |
 
