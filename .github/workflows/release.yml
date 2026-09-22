@@ -65,7 +65,7 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "All generated release artifacts in $releaseDir:"
+          Write-Host "All generated release artifacts in ${releaseDir}:"
           Get-ChildItem $releaseDir | Select-Object Name, Length
 
       - name: Upload to GitHub Release
