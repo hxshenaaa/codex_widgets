@@ -59,7 +59,18 @@ internal static class WebWidget
       .chart svg { width: 100%; height: 100%; display: block; }
       .chart .placeholder { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; opacity: .55; }
       .updated { font-size: 10px; opacity: .55; text-align: right; margin-top: 2px; }
-      @media (max-width: 200px) { .lines, .chart, .updated { display: none; } .percent { font-size: 30px; } }
+      .sessions { margin-top: 8px; border-top: 1px solid rgba(140, 140, 140, 0.2); padding-top: 6px; display: none; }
+      @media (min-height: 250px) { .sessions { display: block; } }
+      .sessions-hdr { font-size: 11px; font-weight: 600; opacity: .65; margin-bottom: 4px; }
+      .session-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+      .session-left { min-width: 0; flex: 1; margin-right: 8px; }
+      .session-title { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .session-detail { font-size: 10px; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .session-right { text-align: right; white-space: nowrap; }
+      .session-tok { font-size: 10px; font-weight: 600; color: #149c58; }
+      @media (prefers-color-scheme: dark) { .session-tok { color: #43cc7f; } }
+      .session-time { font-size: 9.5px; opacity: .55; }
+      @media (max-width: 200px) { .lines, .chart, .updated, .sessions { display: none; } .percent { font-size: 30px; } }
     </style>
     </head>
     <body>
@@ -73,6 +84,10 @@ internal static class WebWidget
       </div>
       <div class="lines" id="lines"></div>
       <div class="chart" id="chart"></div>
+      <div class="sessions" id="sessions">
+        <div class="sessions-hdr">最近任务记录</div>
+        <div id="sessionsList"></div>
+      </div>
       <div class="updated" id="updated"></div>
     <script>
     function smoothPath(pts) {
@@ -184,6 +199,23 @@ internal static class WebWidget
       document.getElementById('lines').textContent = [d.primaryLine, d.secondaryLine, d.planLine].filter(function (x) { return x; }).join('   ');
       document.getElementById('updated').textContent = d.updatedLine;
       renderChart(d.points, accentFor(d.color), d.trendCaption);
+      if (d.recentSessions && d.recentSessions.length > 0) {
+        var sHtml = '';
+        for (var i = 0; i < d.recentSessions.length; i++) {
+          var s = d.recentSessions[i];
+          sHtml += '<div class="session-row">' +
+            '<div class="session-left">' +
+              '<div class="session-title">' + (s.title || '') + '</div>' +
+              (s.detail ? '<div class="session-detail">' + s.detail + '</div>' : '') +
+            '</div>' +
+            '<div class="session-right">' +
+              (s.tokens ? '<div class="session-tok">' + s.tokens + '</div>' : '') +
+              '<div class="session-time">' + (s.time || '') + '</div>' +
+            '</div>' +
+          '</div>';
+        }
+        document.getElementById('sessionsList').innerHTML = sHtml;
+      }
     }
 
     function poll() {

@@ -429,6 +429,202 @@ internal static class CardTemplate
           "$when": "${hasPlanLine && $host.widgetSize == 'large'}"
         },
         {
+          "type": "Container",
+          "spacing": "Medium",
+          "separator": true,
+          "$when": "${hasRecentSessions && $host.widgetSize == 'large'}",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "最近任务记录",
+              "size": "Small",
+              "weight": "Bolder",
+              "isSubtle": true,
+              "spacing": "None"
+            },
+            {
+              "type": "Container",
+              "spacing": "Small",
+              "$when": "${hasSession1}",
+              "items": [
+                {
+                  "type": "ColumnSet",
+                  "spacing": "None",
+                  "columns": [
+                    {
+                      "type": "Column",
+                      "width": "stretch",
+                      "items": [
+                        {
+                          "type": "TextBlock",
+                          "text": "${session1_Title}",
+                          "size": "Small",
+                          "weight": "Bolder",
+                          "spacing": "None",
+                          "maxLines": 1,
+                          "wrap": false
+                        },
+                        {
+                          "type": "TextBlock",
+                          "text": "${session1_Detail}",
+                          "size": "Small",
+                          "isSubtle": true,
+                          "spacing": "None",
+                          "maxLines": 1,
+                          "wrap": false
+                        }
+                      ]
+                    },
+                    {
+                      "type": "Column",
+                      "width": "auto",
+                      "items": [
+                        {
+                          "type": "TextBlock",
+                          "text": "${session1_Tokens}",
+                          "size": "Small",
+                          "weight": "Bolder",
+                          "color": "Good",
+                          "horizontalAlignment": "Right",
+                          "spacing": "None"
+                        },
+                        {
+                          "type": "TextBlock",
+                          "text": "${session1_Time}",
+                          "size": "Small",
+                          "isSubtle": true,
+                          "horizontalAlignment": "Right",
+                          "spacing": "None"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Container",
+              "spacing": "Small",
+              "$when": "${hasSession2}",
+              "items": [
+                {
+                  "type": "ColumnSet",
+                  "spacing": "None",
+                  "columns": [
+                    {
+                      "type": "Column",
+                      "width": "stretch",
+                      "items": [
+                        {
+                          "type": "TextBlock",
+                          "text": "${session2_Title}",
+                          "size": "Small",
+                          "weight": "Bolder",
+                          "spacing": "None",
+                          "maxLines": 1,
+                          "wrap": false
+                        },
+                        {
+                          "type": "TextBlock",
+                          "text": "${session2_Detail}",
+                          "size": "Small",
+                          "isSubtle": true,
+                          "spacing": "None",
+                          "maxLines": 1,
+                          "wrap": false
+                        }
+                      ]
+                    },
+                    {
+                      "type": "Column",
+                      "width": "auto",
+                      "items": [
+                        {
+                          "type": "TextBlock",
+                          "text": "${session2_Tokens}",
+                          "size": "Small",
+                          "weight": "Bolder",
+                          "color": "Good",
+                          "horizontalAlignment": "Right",
+                          "spacing": "None"
+                        },
+                        {
+                          "type": "TextBlock",
+                          "text": "${session2_Time}",
+                          "size": "Small",
+                          "isSubtle": true,
+                          "horizontalAlignment": "Right",
+                          "spacing": "None"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Container",
+              "spacing": "Small",
+              "$when": "${hasSession3}",
+              "items": [
+                {
+                  "type": "ColumnSet",
+                  "spacing": "None",
+                  "columns": [
+                    {
+                      "type": "Column",
+                      "width": "stretch",
+                      "items": [
+                        {
+                          "type": "TextBlock",
+                          "text": "${session3_Title}",
+                          "size": "Small",
+                          "weight": "Bolder",
+                          "spacing": "None",
+                          "maxLines": 1,
+                          "wrap": false
+                        },
+                        {
+                          "type": "TextBlock",
+                          "text": "${session3_Detail}",
+                          "size": "Small",
+                          "isSubtle": true,
+                          "spacing": "None",
+                          "maxLines": 1,
+                          "wrap": false
+                        }
+                      ]
+                    },
+                    {
+                      "type": "Column",
+                      "width": "auto",
+                      "items": [
+                        {
+                          "type": "TextBlock",
+                          "text": "${session3_Tokens}",
+                          "size": "Small",
+                          "weight": "Bolder",
+                          "color": "Good",
+                          "horizontalAlignment": "Right",
+                          "spacing": "None"
+                        },
+                        {
+                          "type": "TextBlock",
+                          "text": "${session3_Time}",
+                          "size": "Small",
+                          "isSubtle": true,
+                          "horizontalAlignment": "Right",
+                          "spacing": "None"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
           "type": "TextBlock",
           "text": "${updatedLine}",
           "size": "Small",

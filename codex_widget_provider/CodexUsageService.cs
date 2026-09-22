@@ -4,6 +4,7 @@ using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace CodexUsageWidgetProvider;
 
@@ -34,6 +35,27 @@ public class WidgetDisplayData
     public bool hasTrendImage { get; set; }
     public bool hasSecondaryLine { get; set; }
     public bool hasPlanLine { get; set; }
+
+    public bool hasRecentSessions { get; set; }
+    public bool hasSession1 { get; set; }
+    public string session1_Title { get; set; } = "";
+    public string session1_Detail { get; set; } = "";
+    public string session1_Tokens { get; set; } = "";
+    public string session1_Time { get; set; } = "";
+
+    public bool hasSession2 { get; set; }
+    public string session2_Title { get; set; } = "";
+    public string session2_Detail { get; set; } = "";
+    public string session2_Tokens { get; set; } = "";
+    public string session2_Time { get; set; } = "";
+
+    public bool hasSession3 { get; set; }
+    public string session3_Title { get; set; } = "";
+    public string session3_Detail { get; set; } = "";
+    public string session3_Tokens { get; set; } = "";
+    public string session3_Time { get; set; } = "";
+
+    public List<RecentSessionItem> recentSessions { get; set; } = new();
 
     public static WidgetDisplayData FromError(string message) => new()
     {
@@ -95,6 +117,38 @@ internal sealed class CodexUsageService
 
             parsed.Data.hasSecondaryLine = !string.IsNullOrEmpty(parsed.Data.secondaryLine);
             parsed.Data.hasPlanLine = !string.IsNullOrEmpty(parsed.Data.planLine);
+
+            var sessions = RecentSessionsReader.GetRecentSessions(3);
+            parsed.Data.recentSessions = sessions;
+            if (sessions.Count > 0)
+            {
+                parsed.Data.hasRecentSessions = true;
+                if (sessions.Count >= 1)
+                {
+                    parsed.Data.hasSession1 = true;
+                    parsed.Data.session1_Title = sessions[0].title;
+                    parsed.Data.session1_Detail = sessions[0].detail;
+                    parsed.Data.session1_Tokens = sessions[0].tokens;
+                    parsed.Data.session1_Time = sessions[0].time;
+                }
+                if (sessions.Count >= 2)
+                {
+                    parsed.Data.hasSession2 = true;
+                    parsed.Data.session2_Title = sessions[1].title;
+                    parsed.Data.session2_Detail = sessions[1].detail;
+                    parsed.Data.session2_Tokens = sessions[1].tokens;
+                    parsed.Data.session2_Time = sessions[1].time;
+                }
+                if (sessions.Count >= 3)
+                {
+                    parsed.Data.hasSession3 = true;
+                    parsed.Data.session3_Title = sessions[2].title;
+                    parsed.Data.session3_Detail = sessions[2].detail;
+                    parsed.Data.session3_Tokens = sessions[2].tokens;
+                    parsed.Data.session3_Time = sessions[2].time;
+                }
+            }
+
             _current = parsed.Data;
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 2)
@@ -141,6 +195,7 @@ internal sealed class CodexUsageService
             color = data.color,
             trendCaption = parsed?.TrendCaption ?? data.trendCaption,
             points = points,
+            recentSessions = data.recentSessions,
         };
         return JsonSerializer.Serialize(payload);
     }
@@ -705,5 +760,141 @@ internal static class TrendChartRenderer
         if (n >= 1_000_000) return $"{n / 1_000_000.0:F1}M";
         if (n >= 1_000) return $"{n / 1_000.0:F0}k";
         return n.ToString();
+    }
+}
+
+public class RecentSessionItem
+{
+    public string title { get; set; } = "";
+    public string detail { get; set; } = "";
+    public string tokens { get; set; } = "";
+    public string time { get; set; } = "";
+}
+
+internal static class RecentSessionsReader
+{
+    public static List<RecentSessionItem> GetRecentSessions(int maxCount = 3)
+    {
+        var result = new List<RecentSessionItem>();
+        var codexDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        var dbPath = Path.Combine(codexDir, "sqlite", "codex-dev.db");
+        var sessionsDir = Path.Combine(codexDir, "sessions");
+
+        if (!File.Exists(dbPath)) return result;
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
+            connection.Open();
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT thread_id, display_title, source_updated_at, cwd, git_branch
+                FROM local_thread_catalog
+                WHERE display_title IS NOT NULL AND display_title != ''
+                ORDER BY source_updated_at DESC
+                LIMIT @limit";
+            cmd.Parameters.AddWithValue("@limit", maxCount);
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var threadId = reader.GetString(0);
+                var title = reader.GetString(1);
+                var updatedAtSec = Convert.ToInt64(reader.GetDouble(2));
+                var cwd = reader.IsDBNull(3) ? "" : reader.GetString(3);
+                var branch = reader.IsDBNull(4) ? "" : reader.GetString(4);
+
+                var folderName = string.IsNullOrEmpty(cwd) ? "" : Path.GetFileName(cwd.TrimEnd('\\', '/'));
+                var detail = string.IsNullOrEmpty(branch)
+                    ? folderName
+                    : (!string.IsNullOrEmpty(folderName) ? $"{folderName} ({branch})" : branch);
+
+                long tokens = GetThreadTokens(sessionsDir, threadId, updatedAtSec);
+
+                result.Add(new RecentSessionItem
+                {
+                    title = title,
+                    detail = string.IsNullOrEmpty(detail) ? "Codex 会话" : detail,
+                    tokens = tokens > 0 ? $"⚡ {TrendChartRenderer.FormatTokens(tokens)}" : "",
+                    time = FormatSessionTime(updatedAtSec)
+                });
+            }
+        }
+        catch
+        {
+            // Reading session records is best-effort.
+        }
+
+        return result;
+    }
+
+    private static long GetThreadTokens(string sessionsDir, string threadId, long updatedAtSec)
+    {
+        if (!Directory.Exists(sessionsDir)) return 0;
+        try
+        {
+            var dto = DateTimeOffset.FromUnixTimeSeconds(updatedAtSec).ToLocalTime();
+            var dayDir = Path.Combine(sessionsDir, dto.Year.ToString(), dto.Month.ToString("D2"), dto.Day.ToString("D2"));
+            string[] files = Array.Empty<string>();
+            if (Directory.Exists(dayDir))
+            {
+                files = Directory.GetFiles(dayDir, $"*{threadId}*.jsonl");
+            }
+            if (files.Length == 0)
+            {
+                files = Directory.GetFiles(sessionsDir, $"*{threadId}*.jsonl", SearchOption.AllDirectories);
+            }
+
+            if (files.Length == 0) return 0;
+
+            long tokens = 0;
+            using var stream = File.Open(files[0], FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (!line.Contains("\"token_usage_record\"")) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("payload", out var payload) &&
+                        payload.TryGetProperty("usage", out var usage) &&
+                        usage.TryGetProperty("total_tokens", out var tokProp))
+                    {
+                        tokens += tokProp.GetInt64();
+                    }
+                }
+                catch
+                {
+                    // Skip malformed lines safely
+                }
+            }
+            return tokens;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static string FormatSessionTime(long unixSec)
+    {
+        try
+        {
+            var dt = DateTimeOffset.FromUnixTimeSeconds(unixSec).ToLocalTime();
+            var now = DateTimeOffset.Now;
+            var span = now - dt;
+
+            if (span.TotalMinutes < 1) return "刚刚";
+            if (span.TotalMinutes < 60) return $"{(int)span.TotalMinutes}分钟前";
+            if (dt.Date == now.Date) return $"今天 {dt:HH:mm}";
+            if (dt.Date == now.Date.AddDays(-1)) return $"昨天 {dt:HH:mm}";
+            return dt.ToString("MM-dd HH:mm");
+        }
+        catch
+        {
+            return "";
+        }
     }
 }
