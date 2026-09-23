@@ -89,3 +89,4 @@ dotnet run --project .\probe -c Release
 - 已知坑：给 `ProcessStartInfo` 设置 `StandardInputEncoding` 会导致 codex 收不到 stdin（代码中已注释说明）
 - 打包任务 `WinAppSdkGenerateAppxManifest` 在 dotnet CLI 下缺 `System.Security.Permissions` 程序集，
   需要把它从 NuGet 缓存复制到 `microsoft.windows.sdk.buildtools.msix\...\tools\net6.0\`（详见 csproj 注释）
+- **已知宿主 Bug**：当 Windows Widgets 切换到新外观/新布局（Switch to new look / lock）且卡片并排摆放时，点开卡片右上角更多操作（More actions / `...`）的下拉弹窗会被右侧相邻卡片遮盖。此问题属于 Windows 11 小组件看板（`Widgets.exe`）在多列网格下的层叠上下文（`z-index`）渲染缺陷。

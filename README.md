@@ -92,3 +92,12 @@ Get-AppxPackage CodexUsageWidget | Remove-AppxPackage
    - 桩卡片注册指向保留域 `https://codexwidget.invalid/`；
    - 通过 manifest 的 `WebRequestFilter` 拦截到 C# 中的 `IWidgetResourceProvider.OnResourceRequested`；
    - 在内存中直接返回自绘 HTML/SVG 与局部数据，完全离线响应。
+
+---
+
+## ⚠️ 已知问题 (Known Issues)
+
+- **Windows Widgets "Switch to new look" 下卡片更多操作 (more action) 弹窗被遮盖**：
+  - **现象**：在 Windows Widgets 切换到新外观/新布局（Switch to new look / lock）后，当卡片并列排放时，点击卡片右上角“更多选项 / 更多操作”（More actions / `...`）弹出的菜单会被右侧相邻卡片遮盖。
+  - **原因**：这是 Windows 11 小组件看板宿主（Windows Web Experience Pack / `Widgets.exe`）在多列网格容器排版下的层叠上下文（`z-index` / Stacking Context）Bug，弹窗未置于全局顶级层或当前卡片未提升层级，属于 Windows 系统小组件宿主端已知渲染缺陷。
+
