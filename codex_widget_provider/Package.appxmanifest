@@ -9,7 +9,7 @@
   <Identity
     Name="CodexUsageWidget"
     Publisher="CN=CodexUsageWidgetDev"
-    Version="1.1.11.0"
+    Version="1.1.12.0"
     ProcessorArchitecture="x64" />
 
   <Properties>

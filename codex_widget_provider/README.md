@@ -54,6 +54,7 @@ Get-AppxPackage CodexUsageWidget | Remove-AppxPackage
 - 支持小/中/大三个尺寸；大字为剩余百分比（优先 Weekly/secondary 窗口，逻辑与 Python 版一致）
 - 重置时间与 Primary/Secondary 明细在中/大尺寸显示，Plan 类型在大尺寸显示
 - 有可用的 usage limit reset 时，各尺寸显示 `Full reset · 可用 N 次`；使用账号响应中的 `rateLimitResetCredits.availableCount`，无可用次数或字段缺失时隐藏
+- Full reset 有到期时间时，预约到期前 24 小时的 Windows 通知；若首次读取已进入最后 24 小时，会立即提醒一次。额度变化或取消固定小组件时撤销旧预约。
 - 面板可见时每 60 秒刷新；不可见时由宿主暂停
 - 数据链路与 Python 版相同：`codex app-server --stdio` → `account/rateLimits/read`
 

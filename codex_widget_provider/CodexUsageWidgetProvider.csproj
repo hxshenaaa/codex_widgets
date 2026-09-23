@@ -9,7 +9,7 @@
     <AssemblyName>CodexUsageWidgetProvider</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <Platforms>x86;x64;arm64</Platforms>
-    <Version>1.1.11</Version>
+    <Version>1.1.12</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- probe\ is a standalone console project sharing two source files -->

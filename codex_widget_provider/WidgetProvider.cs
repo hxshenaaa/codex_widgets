@@ -31,6 +31,7 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
     private static readonly ManualResetEvent s_emptyWidgetListEvent = new(false);
     private static readonly CodexUsageService s_usage = new();
     private static readonly object s_timerGate = new();
+    private static readonly object s_reminderGate = new();
     private static Timer? s_refreshTimer;
 
     public static ManualResetEvent GetEmptyWidgetListEvent() => s_emptyWidgetListEvent;
@@ -66,7 +67,10 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
             WidgetName = widgetContext.DefinitionId,
             IsActive = true,
         };
-        RunningWidgets[widgetId] = info;
+        lock (s_reminderGate)
+        {
+            RunningWidgets[widgetId] = info;
+        }
 
         PushTo(info); // immediate "loading" render
         _ = RefreshAndPushAsync();
@@ -75,8 +79,24 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
     public void DeleteWidget(string widgetId, string customState)
     {
         ProviderLog.Write("DeleteWidget " + widgetId);
-        RunningWidgets.Remove(widgetId);
-        if (RunningWidgets.Count == 0)
+        bool wasLastWidget;
+        lock (s_reminderGate)
+        {
+            RunningWidgets.Remove(widgetId);
+            wasLastWidget = RunningWidgets.Count == 0;
+            if (wasLastWidget)
+            {
+                try
+                {
+                    FullResetReminder.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    ProviderLog.Write("cancel full reset reminder failed: " + ex);
+                }
+            }
+        }
+        if (wasLastWidget)
         {
             s_usage.Shutdown();
             s_emptyWidgetListEvent.Set();
@@ -194,6 +214,20 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
         try
         {
             data = await s_usage.GetLatestAsync();
+            lock (s_reminderGate)
+            {
+                if (RunningWidgets.Count > 0)
+                {
+                    try
+                    {
+                        FullResetReminder.Sync(data);
+                    }
+                    catch (Exception ex)
+                    {
+                        ProviderLog.Write("sync full reset reminder failed: " + ex);
+                    }
+                }
+            }
         }
         catch (Exception ex)
         {

@@ -850,10 +850,22 @@ internal static class RecentSessionsReader
         var dbPath = Path.Combine(codexDir, "sqlite", "codex-dev.db");
         var sessionsDir = Path.Combine(codexDir, "sessions");
 
-        if (!File.Exists(dbPath)) return result;
+        if (!File.Exists(dbPath) || !Directory.Exists(sessionsDir)) return result;
 
         try
         {
+            // The catalog also contains ChatGPT conversations without local Codex
+            // session files. Index the files once before selecting the latest items.
+            var sessionFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in Directory.EnumerateFiles(sessionsDir, "*.jsonl", SearchOption.AllDirectories))
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                if (name.Length < 36) continue;
+                var threadId = name[^36..];
+                if (Guid.TryParseExact(threadId, "D", out _))
+                    sessionFiles.TryAdd(threadId, file);
+            }
+
             using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;");
             connection.Open();
             using var cmd = connection.CreateCommand();
@@ -861,14 +873,14 @@ internal static class RecentSessionsReader
                 SELECT thread_id, display_title, source_updated_at, cwd, git_branch
                 FROM local_thread_catalog
                 WHERE display_title IS NOT NULL AND display_title != ''
-                ORDER BY source_updated_at DESC
-                LIMIT @limit";
-            cmd.Parameters.AddWithValue("@limit", maxCount);
+                ORDER BY source_updated_at DESC";
 
             using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            while (result.Count < maxCount && reader.Read())
             {
                 var threadId = reader.GetString(0);
+                if (!sessionFiles.TryGetValue(threadId, out var sessionFile)) continue;
+
                 var title = reader.GetString(1);
                 var updatedAtSec = Convert.ToInt64(reader.GetDouble(2));
                 var cwd = reader.IsDBNull(3) ? "" : reader.GetString(3);
@@ -879,7 +891,7 @@ internal static class RecentSessionsReader
                     ? folderName
                     : (!string.IsNullOrEmpty(folderName) ? $"{folderName} ({branch})" : branch);
 
-                long tokens = GetThreadTokens(sessionsDir, threadId, updatedAtSec);
+                long tokens = GetThreadTokens(sessionFile);
 
                 result.Add(new RecentSessionItem
                 {
@@ -898,27 +910,12 @@ internal static class RecentSessionsReader
         return result;
     }
 
-    private static long GetThreadTokens(string sessionsDir, string threadId, long updatedAtSec)
+    private static long GetThreadTokens(string sessionFile)
     {
-        if (!Directory.Exists(sessionsDir)) return 0;
         try
         {
-            var dto = DateTimeOffset.FromUnixTimeSeconds(updatedAtSec).ToLocalTime();
-            var dayDir = Path.Combine(sessionsDir, dto.Year.ToString(), dto.Month.ToString("D2"), dto.Day.ToString("D2"));
-            string[] files = Array.Empty<string>();
-            if (Directory.Exists(dayDir))
-            {
-                files = Directory.GetFiles(dayDir, $"*{threadId}*.jsonl");
-            }
-            if (files.Length == 0)
-            {
-                files = Directory.GetFiles(sessionsDir, $"*{threadId}*.jsonl", SearchOption.AllDirectories);
-            }
-
-            if (files.Length == 0) return 0;
-
             long tokens = 0;
-            using var stream = File.Open(files[0], FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var stream = File.Open(sessionFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(stream, Encoding.UTF8);
             string? line;
             while ((line = reader.ReadLine()) != null)
