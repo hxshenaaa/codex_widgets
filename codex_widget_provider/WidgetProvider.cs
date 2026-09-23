@@ -312,6 +312,16 @@ internal static class CardTemplate
           ]
         },
         {
+          "type": "TextBlock",
+          "text": "${fullResetText}",
+          "size": "Small",
+          "weight": "Bolder",
+          "color": "Good",
+          "spacing": "Small",
+          "wrap": true,
+          "$when": "${hasFullResets}"
+        },
+        {
           "type": "ColumnSet",
           "spacing": "Small",
           "$when": "${hasTrendImage && $host.widgetSize != 'small'}",
@@ -410,7 +420,7 @@ internal static class CardTemplate
           "size": "Small",
           "isSubtle": true,
           "spacing": "None",
-          "$when": "${$host.widgetSize != 'small'}"
+          "$when": "${hasPrimaryLine && $host.widgetSize != 'small'}"
         },
         {
           "type": "TextBlock",
@@ -623,14 +633,6 @@ internal static class CardTemplate
               ]
             }
           ]
-        },
-        {
-          "type": "TextBlock",
-          "text": "${updatedLine}",
-          "size": "Small",
-          "isSubtle": true,
-          "spacing": "Medium",
-          "wrap": true
         }
       ]
     }

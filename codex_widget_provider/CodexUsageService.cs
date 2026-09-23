@@ -17,7 +17,28 @@ public class WidgetDisplayData
     public string percent { get; set; } = "--";
     public string windowLabel { get; set; } = "正在读取 Codex 额度…";
     public string resetText { get; set; } = "";
+    public long availableFullResets { get; set; }
+    public long? fullResetExpiresAt { get; set; }
+    public bool hasFullResets => availableFullResets > 0;
+    public string fullResetText
+    {
+        get
+        {
+            if (!hasFullResets) return "";
+            if (fullResetExpiresAt is not null && fullResetExpiresAt > 0)
+            {
+                var dt = DateTimeOffset.FromUnixTimeSeconds(fullResetExpiresAt.Value).LocalDateTime;
+                string dateStr = dt.Year == DateTime.Now.Year
+                    ? dt.ToString("MM'月'dd'日' HH:mm")
+                    : dt.ToString("yyyy'年'MM'月'dd'日' HH:mm");
+                string prefix = availableFullResets > 1 ? "最近 " : "";
+                return $"Full reset · 可用 {availableFullResets} 次 ({prefix}{dateStr} 到期)";
+            }
+            return $"Full reset · 可用 {availableFullResets} 次";
+        }
+    }
     public string primaryLine { get; set; } = "";
+    public bool hasPrimaryLine { get; set; }
     public string secondaryLine { get; set; } = "";
     public string planLine { get; set; } = "";
     public string updatedLine { get; set; } = "";
@@ -115,6 +136,7 @@ internal sealed class CodexUsageService
             parsed.Data.timeStartLabel = "24小时前";
             parsed.Data.timeEndLabel = "现在";
 
+            parsed.Data.hasPrimaryLine = !string.IsNullOrEmpty(parsed.Data.primaryLine);
             parsed.Data.hasSecondaryLine = !string.IsNullOrEmpty(parsed.Data.secondaryLine);
             parsed.Data.hasPlanLine = !string.IsNullOrEmpty(parsed.Data.planLine);
 
@@ -182,6 +204,10 @@ internal sealed class CodexUsageService
             percent = data.percent,
             windowLabel = data.windowLabel,
             resetText = data.resetText,
+            availableFullResets = data.availableFullResets,
+            fullResetExpiresAt = data.fullResetExpiresAt,
+            hasFullResets = data.hasFullResets,
+            fullResetText = data.fullResetText,
             localUsageLine = data.localUsageLine,
             peakLabel = data.peakLabel,
             peakColor = data.peakColor,
@@ -352,6 +378,38 @@ internal static class SnapshotParser
             ? Math.Clamp(100 - GetUsedPercent(secondary.Value), 0, 100) : null;
 
         var data = new WidgetDisplayData();
+        // Reset credits belong to the account response, not an individual limit bucket.
+        // Use availableCount: the optional credit detail list can be capped or omitted.
+        if (result.ValueKind == JsonValueKind.Object &&
+            result.TryGetProperty("rateLimitResetCredits", out var resetCredits) &&
+            resetCredits.ValueKind == JsonValueKind.Object)
+        {
+            data.availableFullResets = Math.Max(0, GetLong(resetCredits, "availableCount") ?? 0);
+            if (resetCredits.TryGetProperty("credits", out var creditsList) &&
+                creditsList.ValueKind == JsonValueKind.Array)
+            {
+                long? earliestExpiresAt = null;
+                long nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                foreach (var credit in creditsList.EnumerateArray())
+                {
+                    if (credit.ValueKind != JsonValueKind.Object) continue;
+                    var status = GetString(credit, "status");
+                    if (status is not null && !string.Equals(status, "available", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    var exp = GetLong(credit, "expiresAt");
+                    if (exp is not null && exp.Value > nowSec)
+                    {
+                        if (earliestExpiresAt is null || exp.Value < earliestExpiresAt.Value)
+                        {
+                            earliestExpiresAt = exp.Value;
+                        }
+                    }
+                }
+                data.fullResetExpiresAt = earliestExpiresAt;
+            }
+        }
         JsonElement? shown = secondary ?? primary;
         int mins = 0;
         int usedPercent = 0;
@@ -390,8 +448,20 @@ internal static class SnapshotParser
         data.localUsageLine = $"账号已用: {usedPercent}% · 本机周消耗: {tokStr}";
         data.hasLocalUsageLine = true;
 
-        data.primaryLine = primary is not null ? LineFor(primary.Value, "Primary") : "";
-        data.secondaryLine = secondary is not null ? LineFor(secondary.Value, "Secondary") : "";
+        if (shownSecondary)
+        {
+            data.primaryLine = (primary is not null && GetInt(primary.Value, "windowDurationMins") != mins)
+                ? LineFor(primary.Value, "Primary")
+                : "";
+            data.secondaryLine = "";
+        }
+        else
+        {
+            data.primaryLine = "";
+            data.secondaryLine = (secondary is not null && GetInt(secondary.Value, "windowDurationMins") != mins)
+                ? LineFor(secondary.Value, "Secondary")
+                : "";
+        }
         string? plan = GetString(snap, "planType");
         data.planLine = string.IsNullOrEmpty(plan) ? "" : $"Plan: {plan}";
         data.updatedLine = $"更新于 {DateTime.Now:HH:mm:ss}";

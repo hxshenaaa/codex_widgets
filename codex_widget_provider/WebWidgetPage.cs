@@ -53,6 +53,8 @@ internal static class WebWidget
       .meta { display: flex; flex-direction: column; min-width: 0; }
       .windowLabel { font-size: 11.5px; opacity: .72; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .reset { font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .full-reset { flex-shrink: 0; font-size: 11px; font-weight: 600; color: #149c58; margin-top: 4px; }
+      @media (prefers-color-scheme: dark) { .full-reset { color: #43cc7f; } }
       .lines { font-size: 11px; opacity: .68; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .chart { flex: 1; min-height: 54px; margin-top: 6px; color: #333; }
       @media (prefers-color-scheme: dark) { .chart { color: #ddd; } }
@@ -83,12 +85,12 @@ internal static class WebWidget
         </div>
       </div>
       <div class="lines" id="lines"></div>
+      <div class="full-reset" id="fullReset" hidden></div>
       <div class="chart" id="chart"></div>
       <div class="sessions" id="sessions">
         <div class="sessions-hdr">最近任务记录</div>
         <div id="sessionsList"></div>
       </div>
-      <div class="updated" id="updated"></div>
     <script>
     function smoothPath(pts) {
       if (!pts || pts.length === 0) return '';
@@ -196,8 +198,10 @@ internal static class WebWidget
       pc.className = 'percent' + (d.color === 'Attention' ? ' attention' : d.color === 'Good' ? ' good' : '');
       document.getElementById('windowLabel').textContent = d.windowLabel;
       document.getElementById('reset').textContent = d.resetText;
+      var fullReset = document.getElementById('fullReset');
+      fullReset.textContent = d.fullResetText || '';
+      fullReset.hidden = !d.hasFullResets;
       document.getElementById('lines').textContent = [d.primaryLine, d.secondaryLine, d.planLine].filter(function (x) { return x; }).join('   ');
-      document.getElementById('updated').textContent = d.updatedLine;
       renderChart(d.points, accentFor(d.color), d.trendCaption);
       if (d.recentSessions && d.recentSessions.length > 0) {
         var sHtml = '';
