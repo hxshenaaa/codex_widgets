@@ -52,6 +52,9 @@ project.assets.json
 # IDEs and Editors
 .vscode/
 .idea/
+xcuserdata/
+*.xcuserstate
+.build/
 *.swp
 *.swo
 *~

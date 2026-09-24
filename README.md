@@ -1,4 +1,31 @@
-# Codex Usage Widget — Windows 11 原生小组件
+# Codex Usage Widget — Windows 11 / macOS 系统小组件
+
+## macOS 版
+
+`macos/CodexUsage.xcodeproj` 包含宿主 App 与 WidgetKit Extension，支持 macOS 14 及更新版本的桌面和通知中心小组件。小、中、大三种尺寸展示剩余额度和过去 24 小时的本地 token 消耗总量；中、大尺寸还显示逐小时消耗的平滑曲线，大尺寸显示最近本地任务及各任务的 token 用量。宿主 App 通过已登录的 Codex CLI 读取额度，并从本机 `~/.codex/sessions` 汇总 token 使用记录，再写入 App Group；小组件从共享快照展示。Full reset 到期前 24 小时提醒可在 App 内开启。
+
+### 构建与添加
+
+1. 安装并首次启动完整 Xcode，阅读并接受许可协议；另需已登录 ChatGPT 账号的 [Codex CLI](https://github.com/openai/codex)。
+2. 用 Xcode 打开 `macos/CodexUsage.xcodeproj`。在 `CodexUsage` 和 `CodexUsageWidget` 两个 target 的 Signing & Capabilities 中选择同一个 Team，并确保两者都启用 App Groups：`group.com.hxshenaaa.codexusagewidget`。若这个 group ID 已被其他团队占用，请同时修改两个 entitlement 文件和 `SharedSnapshotStore.swift` 中的 ID，再用你的 Team 注册。
+3. 选择 `CodexUsage` scheme，在本机运行。首次启动后等待额度出现；找不到 CLI 时，在 App 中填写 `codex` 可执行文件的绝对路径并保存。
+4. 在桌面或通知中心打开 macOS 的“编辑小组件”，搜索 **Codex Usage**，添加所需尺寸。
+
+命令行构建（配置好签名团队之后）：
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project macos/CodexUsage.xcodeproj -scheme CodexUsage \
+  -configuration Debug -destination 'platform=macOS' build
+```
+
+本版采用 Xcode 本机构建与签名方式，没有预签名的 Mac 安装包。对外分发需要为两个 target 配置正式签名，并完成 macOS 分发与公证流程。App 运行期间会在启动、手动刷新、约每 15 分钟和睡眠唤醒时取数；退出 App 后保留最后一次快照，WidgetKit 的刷新频率由系统决定。通知权限仅在点击“开启 Full reset 提醒”时请求。
+
+字段约定与实现说明见 [Usage snapshot 字段约定](docs/usage-snapshot-contract.md) 和 [macOS 实现记录](docs/macos-widget-plan.md)。
+
+---
+
+## Windows 11 版
 
 把 Codex 订阅额度显示到 Windows 11 自带小组件面板（任务栏天气 / `Win + W`）的原生小组件。
 
@@ -102,4 +129,3 @@ Get-AppxPackage CodexUsageWidget | Remove-AppxPackage
 - **Windows Widgets "Switch to new look" 下卡片更多操作 (more action) 弹窗被遮盖**：
   - **现象**：在 Windows Widgets 切换到新外观/新布局（Switch to new look / lock）后，当卡片并列排放时，点击卡片右上角“更多选项 / 更多操作”（More actions / `...`）弹出的菜单会被右侧相邻卡片遮盖。
   - **原因**：这是 Windows 11 小组件看板宿主（Windows Web Experience Pack / `Widgets.exe`）在多列网格容器排版下的层叠上下文（`z-index` / Stacking Context）Bug，弹窗未置于全局顶级层或当前卡片未提升层级，属于 Windows 系统小组件宿主端已知渲染缺陷。
-
