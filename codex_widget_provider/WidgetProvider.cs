@@ -297,16 +297,7 @@ internal static class CardTemplate
       "version": "1.5",
       "body": [
         {
-          "type": "TextBlock",
-          "text": "Codex",
-          "size": "Medium",
-          "weight": "Bolder",
-          "spacing": "None",
-          "$when": "${$host.widgetSize != \"small\"}"
-        },
-        {
           "type": "ColumnSet",
-          "spacing": "Small",
           "columns": [
             {
               "type": "Column",
@@ -329,11 +320,21 @@ internal static class CardTemplate
               "verticalContentAlignment": "Center",
               "items": [
                 {
+                  "type": "Image",
+                  "url": "${windowIcon}",
+                  "altText": "Weekly remaining",
+                  "width": "22px",
+                  "height": "22px",
+                  "spacing": "None",
+                  "$when": "${hasWindowIcon}"
+                },
+                {
                   "type": "TextBlock",
                   "text": "${windowLabel}",
                   "isSubtle": true,
                   "spacing": "None",
-                  "wrap": true
+                  "wrap": true,
+                  "$when": "${!hasWindowIcon}"
                 },
                 {
                   "type": "TextBlock",
@@ -665,6 +666,22 @@ internal static class CardTemplate
                   ]
                 }
               ]
+            }
+          ]
+        },
+        {
+          "type": "Container",
+          "height": "stretch",
+          "verticalContentAlignment": "Bottom",
+          "spacing": "None",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "${versionText}",
+              "size": "Small",
+              "isSubtle": true,
+              "horizontalAlignment": "Right",
+              "spacing": "None"
             }
           ]
         }

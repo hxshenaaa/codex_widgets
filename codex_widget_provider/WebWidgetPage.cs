@@ -41,7 +41,6 @@ internal static class WebWidget
         overflow: hidden;
       }
       @media (prefers-color-scheme: dark) { body { color: #eee; } }
-      .title { font-size: 12px; font-weight: 600; opacity: .7; margin-bottom: 2px; }
       .row { display: flex; align-items: center; gap: 10px; }
       .percent { font-size: 34px; font-weight: 700; line-height: 1.05; }
       .percent.attention { color: #e2452c; }
@@ -52,6 +51,7 @@ internal static class WebWidget
       }
       .meta { display: flex; flex-direction: column; min-width: 0; }
       .windowLabel { font-size: 11.5px; opacity: .72; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .windowLabel img { width: 22px; height: 22px; display: block; }
       .reset { font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .full-reset { flex-shrink: 0; font-size: 11px; font-weight: 600; color: #149c58; margin-top: 4px; }
       @media (prefers-color-scheme: dark) { .full-reset { color: #43cc7f; } }
@@ -72,11 +72,11 @@ internal static class WebWidget
       .session-tok { font-size: 10px; font-weight: 600; color: #149c58; }
       @media (prefers-color-scheme: dark) { .session-tok { color: #43cc7f; } }
       .session-time { font-size: 9.5px; opacity: .55; }
+      .version { flex-shrink: 0; font-size: 9px; opacity: .5; text-align: right; margin-top: auto; }
       @media (max-width: 200px) { .lines, .chart, .updated, .sessions { display: none; } .percent { font-size: 30px; } }
     </style>
     </head>
     <body>
-      <div class="title">Codex</div>
       <div class="row">
         <div class="percent" id="percent">--%</div>
         <div class="meta">
@@ -91,6 +91,7 @@ internal static class WebWidget
         <div class="sessions-hdr">最近任务记录</div>
         <div id="sessionsList"></div>
       </div>
+      <div class="version" id="version"></div>
     <script>
     function smoothPath(pts) {
       if (!pts || pts.length === 0) return '';
@@ -196,8 +197,17 @@ internal static class WebWidget
       var pc = document.getElementById('percent');
       pc.textContent = d.percent + '%';
       pc.className = 'percent' + (d.color === 'Attention' ? ' attention' : d.color === 'Good' ? ' good' : '');
-      document.getElementById('windowLabel').textContent = d.windowLabel;
+      var windowLabel = document.getElementById('windowLabel');
+      if (d.windowIcon) {
+        var icon = document.createElement('img');
+        icon.src = d.windowIcon;
+        icon.alt = d.windowLabel;
+        windowLabel.replaceChildren(icon);
+      } else {
+        windowLabel.textContent = d.windowLabel;
+      }
       document.getElementById('reset').textContent = d.resetText;
+      document.getElementById('version').textContent = d.versionText || '';
       var fullReset = document.getElementById('fullReset');
       fullReset.textContent = d.fullResetText || '';
       fullReset.hidden = !d.hasFullResets;

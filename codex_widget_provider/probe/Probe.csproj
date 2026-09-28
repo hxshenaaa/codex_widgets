@@ -20,6 +20,7 @@
     <Compile Include="..\CodexAppServerClient.cs" Link="CodexAppServerClient.cs" />
     <Compile Include="..\CodexUsageService.cs" Link="CodexUsageService.cs" />
     <Compile Include="..\WebWidgetPage.cs" Link="WebWidgetPage.cs" />
+    <Content Include="..\Assets\Weekly.png" Link="Assets\Weekly.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

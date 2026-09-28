@@ -58,6 +58,8 @@ internal static class ProbeProgram
         {
             percent = "98",
             windowLabel = "Weekly remaining",
+            windowIcon = QuotaWindowIcon.Weekly,
+            versionText = new WidgetDisplayData().versionText,
             resetText = "09月28日 14:09 重置",
             primaryLine = "Week: 98%",
             secondaryLine = "",
@@ -71,9 +73,7 @@ internal static class ProbeProgram
 
         var injected = WebWidget.Html.Replace(
             "</body>",
-            $"<script>apply({json});" +
-            "document.querySelector('.title').textContent = 'w=' + window.innerWidth + ' dpr=' + window.devicePixelRatio +" +
-            " ' mq200=' + matchMedia('(max-width: 200px)').matches + ' mq340=' + matchMedia('(max-width: 340px)').matches;</script></body>");
+            $"<script>apply({json});</script></body>");
         File.WriteAllText(Path.Combine(dir, "pagetest.html"), injected);
         Console.WriteLine($"wrote {dir}\\widget.html, data.json, pagetest.html");
         return 0;

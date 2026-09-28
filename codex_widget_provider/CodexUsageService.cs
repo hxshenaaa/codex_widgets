@@ -16,6 +16,9 @@ public class WidgetDisplayData
 {
     public string percent { get; set; } = "--";
     public string windowLabel { get; set; } = "正在读取 Codex 额度…";
+    public string windowIcon { get; set; } = "";
+    public bool hasWindowIcon { get; set; }
+    public string versionText => "v" + (typeof(WidgetDisplayData).Assembly.GetName().Version?.ToString(3) ?? "?");
     public string resetText { get; set; } = "";
     public long availableFullResets { get; set; }
     public long? fullResetExpiresAt { get; set; }
@@ -203,6 +206,8 @@ internal sealed class CodexUsageService
         {
             percent = data.percent,
             windowLabel = data.windowLabel,
+            windowIcon = data.windowIcon,
+            versionText = data.versionText,
             resetText = data.resetText,
             availableFullResets = data.availableFullResets,
             fullResetExpiresAt = data.fullResetExpiresAt,
@@ -427,6 +432,11 @@ internal static class SnapshotParser
                 > 0 => $"{mins}-min remaining",
                 _ => "Remaining",
             };
+            if (mins == 10080)
+            {
+                data.windowIcon = QuotaWindowIcon.Weekly;
+                data.hasWindowIcon = data.windowIcon.Length > 0;
+            }
             long? resetsAt = GetLong(shown.Value, "resetsAt");
             resets = resetsAt ?? 0;
             data.resetText = resetsAt is null ? "" : $"{FormatReset(resetsAt.Value)} 重置";
@@ -833,6 +843,34 @@ internal static class TrendChartRenderer
     }
 }
 
+internal static class QuotaWindowIcon
+{
+    public static readonly string Weekly = LoadWeekly();
+
+    private static string LoadWeekly()
+    {
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "Assets", "Weekly.png");
+            using var source = Image.FromFile(path);
+            using var bitmap = new Bitmap(64, 64, PixelFormat.Format32bppArgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(source, 0, 0, bitmap.Width, bitmap.Height);
+
+            using var stream = new MemoryStream();
+            bitmap.Save(stream, ImageFormat.Png);
+            return "data:image/png;base64," + Convert.ToBase64String(stream.ToArray());
+        }
+        catch
+        {
+            // Keep the text label if the packaged image cannot be read.
+            return "";
+        }
+    }
+}
+
 public class RecentSessionItem
 {
     public string title { get; set; } = "";
@@ -854,8 +892,8 @@ internal static class RecentSessionsReader
 
         try
         {
-            // The catalog also contains ChatGPT conversations without local Codex
-            // session files. Index the files once before selecting the latest items.
+            // Only local Codex tasks belong in this list. A local session file
+            // alone is not a reliable indication of the catalog entry's origin.
             var sessionFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var file in Directory.EnumerateFiles(sessionsDir, "*.jsonl", SearchOption.AllDirectories))
             {
@@ -873,6 +911,7 @@ internal static class RecentSessionsReader
                 SELECT thread_id, display_title, source_updated_at, cwd, git_branch
                 FROM local_thread_catalog
                 WHERE display_title IS NOT NULL AND display_title != ''
+                  AND source_kind IN ('cli', 'vscode')
                 ORDER BY source_updated_at DESC";
 
             using var reader = cmd.ExecuteReader();
