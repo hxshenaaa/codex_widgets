@@ -33,6 +33,17 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
 
 ![Codex Widget Preview](codex_widget_provider/ProviderAssets/Codex_Screenshot.png)
 
+### 切换账号并保留本地项目和会话
+
+1. 从 Windows 开始菜单打开「Codex Usage Accounts」，或点击小组件的「账号」。当前原生登录显示在第一行，点「收录当前账号」后会自动同步更新的原生凭据。
+2. 用「添加账号」打开 Codex 官方浏览器登录，或先在原生 Codex 登录另一个账号再收录。浏览器添加的新账号先用「仅切换账号」激活一次，打开原生 Codex 初始化，再正常退出。
+3. 退出 ChatGPT/Codex 桌面端和 Codex CLI 后，选择目标账号并点「切换并保留项目」，然后重新打开 Codex。切换前会验证目标登录，遇到项目冲突可以选「仅切换账号」。
+4. 「刷新额度与用量」读取已收录账号的 5 小时和周额度。支持官方账号用量接口时也显示账号总量和近期每日用量。读取失败会显示在对应账号行。
+
+小组件用 Windows 当前用户的 DPAPI 加密保存凭据，并把账号显示信息与额度快照单独存放。切换时把本地项目、会话归属和侧边栏顺序合并到目标账号，保留目标账号已有的项目和会话。遇到归属冲突或无法识别的桌面状态会停止切换。订阅额度和额度趋势按账号读取、保存。全机 24 小时和近 7 天 token 用量按本地日志汇总，包含这台机器上各账号的用量。继承会话只更新项目归属，统计时仍读取同一份日志。会话创建账号不能用来判断后续每轮请求由哪个账号消耗。
+
+此功能适用于使用本地 `auth.json` 登录的 Windows 桌面 Codex。云端项目仍由原账号管理，弹出的窗口布局需要重新打开。
+
 ---
 
 ## ✨ 功能特性
@@ -70,6 +81,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
 > **前置要求**：
 > 1. Windows 11 22H2+（带任务栏小组件看板）。
 > 2. 本机已安装 [Codex CLI](https://github.com/openai/codex) 并完成 ChatGPT 账号登录（在终端运行 `codex` 能正常响应）。若 codex 安装在非默认路径，可配置环境变量 `CODEX_PATH` 指向该可执行文件。
+> 3. 运行 MSIX 需要与安装包架构相同的 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
 ---
 

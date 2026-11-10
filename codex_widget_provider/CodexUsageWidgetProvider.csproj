@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
@@ -9,7 +10,7 @@
     <AssemblyName>CodexUsageWidgetProvider</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <Platforms>x86;x64;arm64</Platforms>
-    <Version>1.1.13</Version>
+    <Version>1.1.14</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- probe\ is a standalone console project sharing two source files -->
@@ -31,6 +32,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\**\*.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ProviderAssets\**\*.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Public\**\*.*" CopyToOutputDirectory="PreserveNewest" />

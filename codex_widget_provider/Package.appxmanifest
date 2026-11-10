@@ -9,7 +9,7 @@
   <Identity
     Name="CodexUsageWidget"
     Publisher="CN=CodexUsageWidgetDev"
-    Version="1.1.13.0"
+    Version="1.1.14.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
@@ -31,19 +31,21 @@
       Executable="CodexUsageWidgetProvider.exe"
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="Codex Usage Widget"
-        Description="Show Codex subscription usage on the Windows Widgets board"
+        DisplayName="Codex Usage Accounts"
+        Description="Manage Codex accounts and preserve local project chats"
         BackgroundColor="#2397C9"
         Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png"
-        AppListEntry="none" />
+        Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="codex-usage-widget" />
+        </uap:Extension>
 
         <!-- Registers the provider exe as a COM out-of-proc server so the
              widgets host can CoCreateInstance the IWidgetProvider below. -->
         <com:Extension Category="windows.comServer">
           <com:ComServer>
-            <com:ExeServer Executable="CodexUsageWidgetProvider.exe" DisplayName="Codex Usage Widget Provider">
+            <com:ExeServer Executable="CodexUsageWidgetProvider.exe" Arguments="--widget-provider" DisplayName="Codex Usage Widget Provider">
               <com:Class Id="d1db3a28-42d3-41d2-b968-eb646f3069d2" DisplayName="Codex Usage Widget Provider" />
             </com:ExeServer>
           </com:ComServer>

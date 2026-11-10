@@ -20,7 +20,7 @@ manifest 的 `WebRequestFilter` 让宿主把该域名下的所有资源请求拦
 
 - Windows 11 22H2+，小组件面板可用
 - 已安装 Codex CLI 并完成 ChatGPT 登录（与 Python 版相同）
-- .NET SDK 8+（仅构建时需要）
+- .NET 8 Desktop Runtime（运行时需要），.NET SDK 8+（构建时需要）
 - codex 安装在特殊位置时设置 `CODEX_PATH`（与 Python 版相同）
 
 ## 构建并安装

@@ -32,7 +32,7 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
     private static readonly CodexUsageService s_usage = new();
     private static readonly object s_timerGate = new();
     private static readonly object s_reminderGate = new();
-    private static Timer? s_refreshTimer;
+    private static System.Threading.Timer? s_refreshTimer;
 
     public static ManualResetEvent GetEmptyWidgetListEvent() => s_emptyWidgetListEvent;
 
@@ -125,7 +125,11 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
 
     public void OnActionInvoked(WidgetActionInvokedArgs actionInvokedArgs)
     {
-        // This widget has no interactive actions.
+        if (actionInvokedArgs.Verb == "accounts")
+        {
+            ProviderLog.Write("Accounts: widget button invoked");
+            CodexAccountsDialog.Open();
+        }
     }
 
     public void OnWidgetContextChanged(WidgetContextChangedArgs contextChangedArgs)
@@ -199,7 +203,7 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
         {
             if (s_refreshTimer is null)
             {
-                s_refreshTimer = new Timer(
+                s_refreshTimer = new System.Threading.Timer(
                     _ => _ = RefreshAndPushAsync(),
                     null,
                     TimeSpan.FromSeconds(RefreshSeconds),
@@ -274,7 +278,8 @@ internal static class ProviderLog
         {
             lock (s_gate)
             {
-                File.AppendAllText(s_path, DateTime.Now.ToString("HH:mm:ss.fff") + " " + message + Environment.NewLine);
+                File.AppendAllText(s_path, DateTime.Now.ToString("HH:mm:ss.fff") +
+                    $" pid={Environment.ProcessId} " + message + Environment.NewLine);
             }
         }
         catch
@@ -341,6 +346,31 @@ internal static class CardTemplate
                   "text": "${resetText}",
                   "spacing": "None",
                   "wrap": true
+                }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "52px",
+              "minHeight": "32px",
+              "spacing": "Small",
+              "verticalContentAlignment": "Center",
+              "selectAction": {
+                "type": "Action.Execute",
+                "title": "管理 Codex 账号",
+                "tooltip": "打开账号管理",
+                "verb": "accounts",
+                "associatedInputs": "none"
+              },
+              "items": [
+                {
+                  "type": "TextBlock",
+                  "text": "账号 ›",
+                  "size": "Small",
+                  "color": "Accent",
+                  "horizontalAlignment": "Right",
+                  "spacing": "None",
+                  "maxLines": 1
                 }
               ]
             }
@@ -481,7 +511,7 @@ internal static class CardTemplate
           "items": [
             {
               "type": "TextBlock",
-              "text": "最近任务记录",
+              "text": "本机最近会话 · 累计",
               "size": "Small",
               "weight": "Bolder",
               "isSubtle": true,

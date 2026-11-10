@@ -1,0 +1,483 @@
+using System.Diagnostics;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
+using System.Security.Principal;
+using System.Text.Json;
+
+namespace CodexUsageWidgetProvider;
+
+internal sealed record SavedCodexAccount(
+    CodexIdentity Identity, string Email, byte[] Credentials, string AccessToken, DateTimeOffset? LastRefresh)
+{
+    public string DisplayName => $"{Email} · {Identity.AccountId[^Math.Min(8, Identity.AccountId.Length)..]}";
+
+    public static SavedCodexAccount Read(byte[] data)
+    {
+        try
+        {
+            using var auth = JsonDocument.Parse(data);
+            var root = auth.RootElement;
+            if (root.TryGetProperty("auth_mode", out var mode) &&
+                mode.GetString() is not ("chatgpt" or "chatgptAuthTokens"))
+                throw InvalidAuth();
+
+            var tokens = root.GetProperty("tokens");
+            var idToken = Required(tokens, "id_token");
+            var accessToken = Required(tokens, "access_token");
+            _ = Required(tokens, "refresh_token");
+            var parts = idToken.Split('.');
+            if (parts.Length != 3)
+                throw InvalidAuth();
+
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight((payload.Length + 3) / 4 * 4, '=');
+            using var jwt = JsonDocument.Parse(Convert.FromBase64String(payload));
+            var claims = jwt.RootElement;
+            var identity = claims.GetProperty("https://api.openai.com/auth");
+            var accountId = Required(identity, "chatgpt_account_id");
+            if (tokens.TryGetProperty("account_id", out var selected) &&
+                selected.ValueKind != JsonValueKind.Null && selected.GetString() != accountId)
+                throw InvalidAuth();
+
+            var userId = identity.TryGetProperty("chatgpt_user_id", out _)
+                ? Required(identity, "chatgpt_user_id") : Required(identity, "user_id");
+            if (identity.TryGetProperty("user_id", out var otherUserId) && otherUserId.GetString() != userId)
+                throw InvalidAuth();
+            var email = Required(claims, "email");
+            if (email.Length > 256 || email.Any(char.IsControl) || accountId.Length > 256 || userId.Length > 256)
+                throw InvalidAuth();
+
+            // The token came from the native login file. Claims identify the local
+            // renderer slot; the Codex client authenticates the restored session.
+            DateTimeOffset? refreshedAt = root.TryGetProperty("last_refresh", out var refresh) &&
+                refresh.ValueKind == JsonValueKind.String && refresh.TryGetDateTimeOffset(out var timestamp)
+                ? timestamp : null;
+            return new SavedCodexAccount(new CodexIdentity(accountId, userId), email, data, accessToken, refreshedAt);
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException ||
+                                   ex is InvalidOperationException and not AccountSwitchException)
+        {
+            throw new AccountSwitchException("当前 Codex 登录文件不可用。请在原生 Codex 中登录 ChatGPT 账号后重试。", ex);
+        }
+    }
+
+    private static string Required(JsonElement element, string key)
+    {
+        var value = element.GetProperty(key).GetString();
+        return !string.IsNullOrWhiteSpace(value) ? value : throw InvalidAuth();
+    }
+
+    private static AccountSwitchException InvalidAuth() =>
+        new("仅支持使用本地登录文件的 ChatGPT 账号。请在原生 Codex 中登录后重试。");
+}
+
+internal sealed record CodexAccountProfile(string Key, CodexIdentity? Identity, string Label,
+    DateTimeOffset? LastRefresh, AccountUsageSnapshot? Usage, string? Error);
+
+internal sealed class CodexAccounts
+{
+    private const int AuthLimit = 1024 * 1024;
+    private const int StateLimit = 32 * 1024 * 1024;
+    private readonly string _authPath;
+    private readonly string _statePath;
+    private readonly string _storeDirectory;
+    private readonly Func<bool> _isCodexRunning;
+    private readonly Func<SavedCodexAccount, bool, bool, Task<AccountInspection>> _inspect;
+
+    public static string CodexHome => Environment.GetEnvironmentVariable("CODEX_HOME") is { Length: > 0 } home
+        ? Path.GetFullPath(home)
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+
+    public CodexAccounts()
+        : this(CodexHome, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CodexUsageWidget", "accounts"), IsCodexRunning)
+    {
+    }
+
+    internal CodexAccounts(string codexHome, string storeDirectory, Func<bool> isCodexRunning,
+        Func<SavedCodexAccount, bool, bool, Task<AccountInspection>>? inspect = null)
+    {
+        _authPath = Path.Combine(codexHome, "auth.json");
+        _statePath = Path.Combine(codexHome, ".codex-global-state.json");
+        _storeDirectory = storeDirectory;
+        _isCodexRunning = isCodexRunning;
+        _inspect = inspect ?? ((account, refresh, usage) =>
+            CodexAccountConnection.InspectAsync(_storeDirectory, account, refresh, usage));
+    }
+
+    public SavedCodexAccount? ReadCurrent()
+    {
+        var data = ReadFile(_authPath, AuthLimit);
+        return data is null ? null : SavedCodexAccount.Read(data);
+    }
+
+    public IReadOnlyList<CodexAccountProfile> ListSaved()
+    {
+        using var gate = LockStore();
+        return Directory.EnumerateFiles(_storeDirectory, "*.account")
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(key => key is { Length: 64 } && key.All(Uri.IsHexDigit))
+            .Select(key => ReadProfile(key!))
+            .OrderBy(profile => profile.Label, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+    }
+
+    public void SaveCurrent()
+    {
+        using var gate = LockStore();
+        var current = ReadCurrent() ?? throw new AccountSwitchException("请先在原生 Codex 中登录账号。");
+        Save(current);
+    }
+
+    public void SyncCurrent()
+    {
+        using var gate = LockStore();
+        var current = ReadCurrent();
+        if (current is not null)
+            SyncEnrolled(current);
+    }
+
+    public async Task AddAccountAsync(CancellationToken cancellationToken)
+    {
+        var account = await CodexAccountConnection.LoginAsync(_storeDirectory, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var gate = LockStore();
+        Save(account);
+    }
+
+    public async Task RefreshSavedAsync(CancellationToken cancellationToken)
+    {
+        foreach (var profile in ListSaved())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (profile.Identity is null)
+                continue;
+            using var runtime = LockRuntime();
+            using var gate = LockStore();
+            try
+            {
+                var account = ReadSaved(AccountPath(profile.Identity));
+                var inspection = await _inspect(account, false, true);
+                RememberInspection(account, inspection);
+            }
+            catch (Exception ex) when (IsProfileReadError(ex))
+            {
+                WriteProfile(profile with { Error = "无法读取保存的登录。可移除此记录或重新添加。" });
+            }
+        }
+    }
+
+    public void Forget(string key)
+    {
+        using var gate = LockStore();
+        File.Delete(AccountPath(key));
+        File.Delete(ProfilePath(key));
+    }
+
+    public async Task<bool> SwitchToAsync(CodexIdentity targetIdentity, bool inheritProjects)
+    {
+        using var runtime = LockRuntime();
+        using var gate = LockStore();
+        var source = ReadCurrent();
+        if (source?.Identity == targetIdentity)
+            return false;
+
+        EnsureClosed();
+        var target = ReadSaved(AccountPath(targetIdentity));
+        if (target.Identity != targetIdentity)
+            throw new AccountSwitchException("保存的登录与所选账号不一致，请删除该记录并重新保存。");
+
+        byte[]? state = null;
+        byte[]? inherited = null;
+        if (inheritProjects)
+        {
+            if (source is null)
+                throw new AccountSwitchException("当前没有本地登录。请先选择「仅切换账号」初始化。");
+            state = ReadFile(_statePath, StateLimit)
+                ?? throw new AccountSwitchException("未找到桌面项目状态。请先仅切换到目标账号，启动 Codex 初始化后再退出。");
+            inherited = CodexProjectState.Inherit(state, source.Identity, target.Identity);
+        }
+
+        var inspection = await _inspect(target, true, false);
+        RememberInspection(target, inspection);
+        if (inspection.Error is not null || inspection.Usage is null)
+            throw new AccountSwitchException(inspection.Error ?? "目标账号尚未验证，切换已停止。");
+        target = inspection.Credentials;
+
+        if (source is not null)
+        {
+            if (File.Exists(AccountPath(source.Identity)))
+                SyncEnrolled(source);
+            else
+                Save(source);
+        }
+        EnsureClosed();
+        EnsureUnchanged(_authPath, source?.Credentials, AuthLimit);
+        if (inherited is not null)
+            ReplaceIfUnchanged(_statePath, inherited, state, StateLimit);
+
+        try
+        {
+            EnsureClosed();
+            if (inheritProjects)
+                EnsureUnchanged(_statePath, inherited ?? state, StateLimit);
+            ReplaceIfUnchanged(_authPath, target.Credentials, source?.Credentials, AuthLimit, protectNewFile: true);
+        }
+        catch (Exception ex) when (inherited is not null)
+        {
+            try
+            {
+                EnsureClosed();
+                EnsureUnchanged(_authPath, source?.Credentials, AuthLimit);
+                ReplaceIfUnchanged(_statePath, state!, inherited, StateLimit);
+            }
+            catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException or AccountSwitchException)
+            {
+                throw new AccountSwitchException("切换中断，目标账号可能已收到项目索引。请关闭 Codex 后重试。", ex);
+            }
+
+            throw;
+        }
+
+        try
+        {
+            EnsureClosed();
+            EnsureUnchanged(_authPath, target.Credentials, AuthLimit);
+            if (inheritProjects)
+                EnsureUnchanged(_statePath, inherited ?? state, StateLimit);
+        }
+        catch (Exception ex) when (ex is AccountSwitchException or IOException)
+        {
+            throw new AccountSwitchException("切换期间 Codex 已启动或写入状态。请确认当前登录和项目归属后再继续。", ex);
+        }
+
+        return true;
+    }
+
+    private void EnsureClosed()
+    {
+        if (_isCodexRunning())
+            throw new AccountSwitchException("请正常退出 ChatGPT 桌面端和 Codex CLI，等待所有任务结束后再切换。");
+    }
+
+    private static bool IsCodexRunning()
+    {
+        using var current = Process.GetCurrentProcess();
+        foreach (var name in new[] { "ChatGPT", "Codex", "codex-app-server" })
+        {
+            var processes = Process.GetProcessesByName(name);
+            try
+            {
+                if (processes.Any(process => !process.HasExited && process.SessionId == current.SessionId))
+                    return true;
+            }
+            finally
+            {
+                foreach (var process in processes)
+                    process.Dispose();
+            }
+        }
+
+        return false;
+    }
+
+    // The widget and the Start menu app run in separate processes. Hold this
+    // lock until the widget's temporary app-server has exited, or the switch
+    // has finished writing both files.
+    public FileStream LockRuntime()
+    {
+        Directory.CreateDirectory(_storeDirectory);
+        var path = Path.Combine(_storeDirectory, "runtime.lock");
+        var wait = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33)
+            {
+                if (wait.Elapsed >= TimeSpan.FromSeconds(45))
+                    throw new AccountSwitchException("另一个 Codex 额度读取或账号切换仍在运行，请稍后重试。", ex);
+
+                Thread.Sleep(150);
+            }
+        }
+    }
+
+    private FileStream LockStore()
+    {
+        Directory.CreateDirectory(_storeDirectory);
+        return new FileStream(Path.Combine(_storeDirectory, "switch.lock"), FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None);
+    }
+
+    private string AccountPath(CodexIdentity identity) => AccountPath(identity.StorageKey);
+
+    private string AccountPath(string key)
+    {
+        if (key.Length != 64 || !key.All(Uri.IsHexDigit))
+            throw new AccountSwitchException("账号记录编号无效。");
+        return Path.Combine(_storeDirectory, key + ".account");
+    }
+
+    private string ProfilePath(string key) => Path.ChangeExtension(AccountPath(key), ".json");
+
+    private CodexAccountProfile ReadProfile(string key)
+    {
+        try
+        {
+            var bytes = ReadFile(ProfilePath(key), AuthLimit);
+            var cached = bytes is null ? null : JsonSerializer.Deserialize<CodexAccountProfile>(bytes);
+            if (cached?.Key == key && cached.Identity?.StorageKey == key)
+                return cached.Usage is { DailyUsage: null } usage ? cached with { Usage = usage with { DailyUsage = [] } } : cached;
+        }
+        catch (Exception ex) when (IsProfileReadError(ex)) { }
+
+        try
+        {
+            var account = ReadSaved(AccountPath(key));
+            var profile = NewProfile(account);
+            WriteProfile(profile);
+            return profile;
+        }
+        catch (Exception ex) when (IsProfileReadError(ex))
+        {
+            return new CodexAccountProfile(key, null, $"无法读取的账号 · {key[..8]}", null, null,
+                "可移除此记录或重新添加。");
+        }
+    }
+
+    private static bool IsProfileReadError(Exception error) =>
+        error is AccountSwitchException or IOException or UnauthorizedAccessException or CryptographicException or JsonException;
+
+    private static CodexAccountProfile NewProfile(SavedCodexAccount account) =>
+        new(account.Identity.StorageKey, account.Identity, account.DisplayName, account.LastRefresh, null, null);
+
+    private void WriteProfile(CodexAccountProfile profile)
+    {
+        var path = ProfilePath(profile.Key);
+        ReplaceIfUnchanged(path, JsonSerializer.SerializeToUtf8Bytes(profile), ReadFile(path, AuthLimit), AuthLimit);
+    }
+
+    private void SyncEnrolled(SavedCodexAccount current)
+    {
+        var key = current.Identity.StorageKey;
+        if (!File.Exists(AccountPath(key)))
+            return;
+        var profile = ReadProfile(key);
+        if (profile.Identity is null || current.LastRefresh > profile.LastRefresh ||
+            current.LastRefresh is not null && profile.LastRefresh is null)
+            Save(current);
+    }
+
+    private void RememberInspection(SavedCodexAccount original, AccountInspection inspection)
+    {
+        if (inspection.Credentials.Identity != original.Identity)
+            throw new AccountSwitchException("验证后的身份与目标账号不一致。");
+
+        if (!inspection.Credentials.Credentials.AsSpan().SequenceEqual(original.Credentials))
+            Save(inspection.Credentials);
+        var profile = ReadProfile(original.Identity.StorageKey);
+        var snapshot = inspection.Usage;
+        if (snapshot is not null && profile.Usage is { } previous &&
+            snapshot.LifetimeTokens is null && snapshot.DailyUsage.Length == 0)
+            snapshot = snapshot with { LifetimeTokens = previous.LifetimeTokens, DailyUsage = previous.DailyUsage };
+
+        WriteProfile(profile with { Usage = snapshot ?? profile.Usage, Error = inspection.Error });
+    }
+
+    private SavedCodexAccount ReadSaved(string path)
+    {
+        var encrypted = ReadFile(path, AuthLimit * 2)
+            ?? throw new AccountSwitchException("找不到已保存的账号。请重新登录并保存。");
+        var auth = ProtectedData.Unprotect(encrypted, optionalEntropy: null, DataProtectionScope.CurrentUser);
+        var account = SavedCodexAccount.Read(auth);
+        if (!StringComparer.OrdinalIgnoreCase.Equals(path, AccountPath(account.Identity)))
+            throw new AccountSwitchException("保存的登录与账号记录不一致，请重新保存。");
+
+        return account;
+    }
+
+    private void Save(SavedCodexAccount account)
+    {
+        var path = AccountPath(account.Identity);
+        var old = ReadFile(path, AuthLimit * 2);
+        var profile = old is null ? NewProfile(account) : ReadProfile(account.Identity.StorageKey);
+        var encrypted = ProtectedData.Protect(account.Credentials, optionalEntropy: null, DataProtectionScope.CurrentUser);
+        ReplaceIfUnchanged(path, encrypted, old, AuthLimit * 2);
+        WriteProfile(profile with { Identity = account.Identity, Label = account.DisplayName, LastRefresh = account.LastRefresh, Error = null });
+    }
+
+    private static byte[]? ReadFile(string path, int limit)
+    {
+        try
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new AccountSwitchException("账号切换无法操作链接形式的登录或状态文件。");
+
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            if (stream.Length > limit)
+                throw new AccountSwitchException("登录或状态文件大小超出支持范围，切换已停止。");
+
+            var bytes = new byte[stream.Length];
+            stream.ReadExactly(bytes);
+            if (stream.ReadByte() != -1)
+                throw new IOException("读取时文件已变化，请重试。");
+
+            return bytes;
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+    }
+
+    private static void EnsureUnchanged(string path, byte[]? expected, int limit)
+    {
+        var current = ReadFile(path, limit);
+        if (expected is null ? current is not null : current is null || !expected.AsSpan().SequenceEqual(current))
+            throw new AccountSwitchException("登录或项目状态在切换期间发生变化，请退出 Codex 后重试。");
+    }
+
+    private static void ReplaceIfUnchanged(string path, byte[] bytes, byte[]? expected, int limit, bool protectNewFile = false)
+    {
+        if (bytes.Length > limit)
+            throw new AccountSwitchException("合并后的状态超出支持范围，切换已停止。");
+
+        var directory = Path.GetDirectoryName(path)!;
+        var temporary = Path.Combine(directory, $".codex-widget-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            FileSecurity? security = null;
+            if (expected is null && protectNewFile)
+            {
+                using var owner = WindowsIdentity.GetCurrent();
+                var user = owner.User ?? throw new AccountSwitchException("无法确认当前 Windows 用户。");
+                security = new FileSecurity();
+                security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+                security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+            }
+            else if (expected is not null)
+            {
+                EnsureUnchanged(path, expected, limit);
+                security = new FileInfo(path).GetAccessControl(AccessControlSections.Access);
+            }
+
+            using (var output = security is null
+                       ? new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)
+                       : new FileInfo(temporary).Create(FileMode.CreateNew, FileSystemRights.Write,
+                           FileShare.None, 4096, FileOptions.None, security))
+            {
+                output.Write(bytes);
+                output.Flush(flushToDisk: true);
+            }
+
+            EnsureUnchanged(path, expected, limit);
+            File.Move(temporary, path, overwrite: expected is not null);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
+    }
+}

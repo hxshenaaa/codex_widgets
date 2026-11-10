@@ -88,7 +88,7 @@ internal static class WebWidget
       <div class="full-reset" id="fullReset" hidden></div>
       <div class="chart" id="chart"></div>
       <div class="sessions" id="sessions">
-        <div class="sessions-hdr">最近任务记录</div>
+        <div class="sessions-hdr">本机最近会话 · 累计</div>
         <div id="sessionsList"></div>
       </div>
       <div class="version" id="version"></div>

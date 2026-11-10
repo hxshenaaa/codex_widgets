@@ -100,7 +100,9 @@ internal sealed record ParsedSnapshot(
 internal sealed class CodexUsageService
 {
     private readonly CodexAppServerClient _client = new();
-    private readonly History _history = new();
+    private readonly CodexAccounts _accounts = new();
+    private History _history = new();
+    private CodexIdentity? _historyOwner;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private WidgetDisplayData _current = new();
     private ParsedSnapshot? _lastParsed;
@@ -112,7 +114,32 @@ internal sealed class CodexUsageService
         await _refreshLock.WaitAsync();
         try
         {
-            var result = await _client.GetRateLimitsAsync();
+            CodexIdentity? identity;
+            JsonElement result;
+            using (await Task.Run(_accounts.LockRuntime))
+            {
+                identity = ReadUsageIdentity();
+                try
+                {
+                    result = await _client.GetRateLimitsAsync();
+                }
+                finally
+                {
+                    _client.Stop();
+                }
+
+                if (identity != ReadUsageIdentity())
+                    throw new InvalidOperationException("Codex 账号已变化，等待重新读取额度。");
+            }
+
+            if (identity != _historyOwner)
+            {
+                _history = new History(identity?.StorageKey);
+                _historyOwner = identity;
+                _lastParsed = null;
+                _current = new();
+            }
+
             var parsed = SnapshotParser.Parse(result);
             _lastParsed = parsed;
 
@@ -133,9 +160,7 @@ internal sealed class CodexUsageService
             bool isAllZero = activity.MaxTokens <= 0;
             parsed.Data.peakLabel = isAllZero ? "峰值: 暂无请求" : $"峰值 {TrendChartRenderer.FormatTokens(activity.MaxTokens)}/h";
             parsed.Data.peakColor = isAllZero ? "Default" : "Good";
-            parsed.Data.activitySummaryLabel = activity.TotalTokens > 0
-                ? $"24h 消耗 ({TrendChartRenderer.FormatTokens(activity.TotalTokens)})"
-                : "24h 消耗 0";
+            parsed.Data.activitySummaryLabel = $"全机 24h: {TrendChartRenderer.FormatTokens(activity.TotalTokens)}";
             parsed.Data.timeStartLabel = "24小时前";
             parsed.Data.timeEndLabel = "现在";
 
@@ -231,6 +256,18 @@ internal sealed class CodexUsageService
         return JsonSerializer.Serialize(payload);
     }
 
+    private CodexIdentity? ReadUsageIdentity()
+    {
+        try
+        {
+            return _accounts.ReadCurrent()?.Identity;
+        }
+        catch (Exception ex) when (ex is AccountSwitchException or IOException or UnauthorizedAccessException)
+        {
+            return null; // API-key and platform credential-store users keep the legacy history.
+        }
+    }
+
     public void Shutdown()
     {
         _client.Stop();
@@ -239,8 +276,8 @@ internal sealed class CodexUsageService
 
 /// <summary>
 /// Rolling 30-day sample history, stored as JSON at
-/// %USERPROFILE%\.codex_usage_widget_history.json (kept separate from the
-/// Python app's sqlite history; the two run side by side).
+/// %USERPROFILE%\.codex_usage_widget_history[-account-key].json. Unattributed
+/// legacy samples stay separate from the histories of saved ChatGPT logins.
 /// </summary>
 internal sealed class History
 {
@@ -257,11 +294,11 @@ internal sealed class History
     private readonly object _gate = new();
     private List<Sample> _samples = new();
 
-    public History()
+    public History(string? accountKey = null)
     {
         _path = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".codex_usage_widget_history.json");
+            accountKey is null ? ".codex_usage_widget_history.json" : $".codex_usage_widget_history-{accountKey}.json");
         try
         {
             if (File.Exists(_path))
@@ -418,7 +455,6 @@ internal static class SnapshotParser
         JsonElement? shown = secondary ?? primary;
         int mins = 0;
         int usedPercent = 0;
-        long resets = 0;
         if (shown is not null)
         {
             int remaining = shownSecondary ? secondaryRemaining!.Value : primaryRemaining!.Value;
@@ -438,7 +474,6 @@ internal static class SnapshotParser
                 data.hasWindowIcon = data.windowIcon.Length > 0;
             }
             long? resetsAt = GetLong(shown.Value, "resetsAt");
-            resets = resetsAt ?? 0;
             data.resetText = resetsAt is null ? "" : $"{FormatReset(resetsAt.Value)} 重置";
             data.color = remaining <= 15 ? "Attention" : remaining >= 60 ? "Good" : "Default";
         }
@@ -449,13 +484,8 @@ internal static class SnapshotParser
         }
 
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        long cycleStart = (resets > now && mins > 0)
-            ? (resets - (long)mins * 60)
-            : (now - 7 * 86400);
-
-        long cycleTokens = TokenActivityReader.GetTokensInRange(cycleStart, now);
-        string tokStr = TrendChartRenderer.FormatTokens(cycleTokens);
-        data.localUsageLine = $"账号已用: {usedPercent}% · 本机周消耗: {tokStr}";
+        long machineTokens = TokenActivityReader.GetTokensInRange(now - 7 * 86400, now);
+        data.localUsageLine = $"当前账号已用: {usedPercent}% · 全机近 7 天: {TrendChartRenderer.FormatTokens(machineTokens)}";
         data.hasLocalUsageLine = true;
 
         if (shownSecondary)

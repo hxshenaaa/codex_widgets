@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace CodexUsageWidgetProvider;
 
@@ -14,8 +15,9 @@ internal sealed class CodexServerException : Exception
 /// CodexAppServer in codex_usage_widget.py: initialize/initialized
 /// handshake, then account/rateLimits/read requests.
 /// </summary>
-internal sealed class CodexAppServerClient
+internal sealed class CodexAppServerClient(string? isolatedHome = null)
 {
+    private readonly Channel<JsonElement> _loginEvents = Channel.CreateUnbounded<JsonElement>();
     private readonly object _gate = new();
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _startLock = new(1, 1);
@@ -25,15 +27,60 @@ internal sealed class CodexAppServerClient
 
     /// <summary>Optional diagnostic trace hook (set by the probe).</summary>
     public static Action<string>? Log { get; set; }
-    private static void Trace(string message) => Log?.Invoke(message);
+    private void Trace(string message)
+    {
+        if (isolatedHome is null)
+            Log?.Invoke(message);
+    }
 
-    public async Task<JsonElement> GetRateLimitsAsync()
+    public Task<JsonElement> GetRateLimitsAsync() => CallAsync("account/rateLimits/read");
+    public Task<JsonElement> GetUsageAsync() => CallAsync("account/usage/read");
+
+    public Task<JsonElement> UseExternalAccountAsync(string accountId, string accessToken) =>
+        CallAsync("account/login/start", new { type = "chatgptAuthTokens", chatgptAccountId = accountId, accessToken });
+
+    public Task<JsonElement> ReadAccountAsync(bool refreshToken = false) =>
+        CallAsync("account/read", new { refreshToken });
+
+    public async Task LoginAsync(Action<Uri> openBrowser, CancellationToken cancellationToken)
+    {
+        var response = await CallAsync("account/login/start", new { type = "chatgpt", useHostedLoginSuccessPage = true });
+        var loginId = response.GetProperty("loginId").GetString();
+        if (string.IsNullOrEmpty(loginId) ||
+            !Uri.TryCreate(response.GetProperty("authUrl").GetString(), UriKind.Absolute, out var url) ||
+            url.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(url.UserInfo) ||
+            url.Host is not ("auth.openai.com" or "chatgpt.com" or "auth0.openai.com"))
+            throw new AccountSwitchException("Codex 未返回受支持的官方登录地址。");
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            openBrowser(url);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMinutes(5));
+            while (true)
+            {
+                var result = await _loginEvents.Reader.ReadAsync(timeout.Token);
+                if (!result.TryGetProperty("loginId", out var id) || id.GetString() != loginId)
+                    continue;
+                if (result.GetProperty("success").ValueKind != JsonValueKind.True)
+                    throw new AccountSwitchException("官方登录未完成，请重新添加账号。");
+                return;
+            }
+        }
+        finally
+        {
+            // Stopping the isolated app-server also closes its callback listener.
+            Stop();
+        }
+    }
+
+    private async Task<JsonElement> CallAsync(string method, object? parameters = null)
     {
         if (!IsReady())
-        {
             await StartAsync();
-        }
-        return await RequestAsync("account/rateLimits/read", null, TimeSpan.FromSeconds(20));
+
+        return await RequestAsync(method, parameters, TimeSpan.FromSeconds(20));
     }
 
     private bool IsReady()
@@ -72,6 +119,15 @@ internal sealed class CodexAppServerClient
                     StandardOutputEncoding = Encoding.UTF8,
                     StandardErrorEncoding = Encoding.UTF8,
                 };
+                if (isolatedHome is not null)
+                {
+                    psi.WorkingDirectory = isolatedHome;
+                    psi.Environment["CODEX_HOME"] = isolatedHome;
+                    psi.Environment.Remove("OPENAI_API_KEY");
+                    psi.Environment.Remove("CODEX_API_KEY");
+                    psi.Environment.Remove("CODEX_MANAGED_BY_NPM");
+                }
+
                 proc = Process.Start(psi)
                     ?? throw new InvalidOperationException("failed to start codex app-server");
                 _proc = proc;
@@ -176,9 +232,15 @@ internal sealed class CodexAppServerClient
                 using (doc)
                 {
                     var root = doc.RootElement;
-                    if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("id", out var idEl))
+                    if (root.ValueKind != JsonValueKind.Object)
+                        continue;
+                    if (!root.TryGetProperty("id", out var idEl))
                     {
-                        continue; // notification; not needed for rate limit reads
+                        if (root.TryGetProperty("method", out var method) &&
+                            method.ValueKind == JsonValueKind.String && method.GetString() == "account/login/completed" &&
+                            root.TryGetProperty("params", out var parameters))
+                            _loginEvents.Writer.TryWrite(parameters.Clone());
+                        continue;
                     }
                     int rid = ParseId(idEl);
                     if (rid < 0)
@@ -228,7 +290,11 @@ internal sealed class CodexAppServerClient
         }
         finally
         {
-            FailAllPending();
+            lock (_gate)
+            {
+                if (ReferenceEquals(_proc, proc))
+                    FailAllPending();
+            }
         }
     }
 
@@ -265,21 +331,28 @@ internal sealed class CodexAppServerClient
         {
             proc = _proc;
             _proc = null;
-            _initialized = false;
+            FailAllPending();
         }
         try
         {
             if (proc is { HasExited: false })
             {
-                proc.Kill(entireProcessTree: true);
-                proc.WaitForExit(2000);
+                proc.StandardInput.Close();
+                if (!proc.WaitForExit(1500))
+                {
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(2000);
+                }
             }
         }
         catch
         {
             // Best effort; a dead process will be relaunched on next use.
         }
-        FailAllPending();
+        finally
+        {
+            proc?.Dispose();
+        }
     }
 }
 

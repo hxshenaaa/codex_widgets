@@ -28,13 +28,23 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
-        ProviderLog.Write("provider starting, args=" + string.Join(" ", args));
+        ProviderLog.Write($"Codex Usage starting pid={Environment.ProcessId} " +
+            $"provider={args.Contains("--widget-provider")} embedding={args.Contains("-Embedding")} " +
+            $"protocol={args.Any(arg => arg.StartsWith("codex-usage-widget:", StringComparison.OrdinalIgnoreCase))}");
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
             ProviderLog.Write("UNHANDLED exception: " + e.ExceptionObject);
 
         if (args.Length > 0 && args[0] == "--probe")
         {
             return await ProbeAsync();
+        }
+
+        if (!args.Any(arg => arg.Equals("--widget-provider", StringComparison.OrdinalIgnoreCase) ||
+                             arg.Equals("-Embedding", StringComparison.OrdinalIgnoreCase)))
+        {
+            var dialogThread = CodexAccountsDialog.Open();
+            dialogThread.Join();
+            return 0;
         }
 
         // CLSCTX_LOCAL_SERVER = 0x4, REGCLS_SINGLEUSE = 0x1.
