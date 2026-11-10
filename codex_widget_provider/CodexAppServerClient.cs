@@ -15,7 +15,7 @@ internal sealed class CodexServerException : Exception
 /// CodexAppServer in codex_usage_widget.py: initialize/initialized
 /// handshake, then account/rateLimits/read requests.
 /// </summary>
-internal sealed class CodexAppServerClient(string? isolatedHome = null)
+internal sealed class CodexAppServerClient(string? isolatedHome = null, string? executablePath = null)
 {
     private readonly Channel<JsonElement> _loginEvents = Channel.CreateUnbounded<JsonElement>();
     private readonly object _gate = new();
@@ -41,6 +41,15 @@ internal sealed class CodexAppServerClient(string? isolatedHome = null)
 
     public Task<JsonElement> ReadAccountAsync(bool refreshToken = false) =>
         CallAsync("account/read", new { refreshToken });
+
+    public Task<JsonElement> ReadAuthenticationAsync() =>
+        CallAsync("getAuthStatus", new { includeToken = true, refreshToken = false });
+
+    public Task<JsonElement> ReadProjectsAsync(string? cursor = null) =>
+        CallAsync("project/list", new { cursor, limit = 100 });
+
+    public Task<JsonElement> ReadThreadAsync(string id) =>
+        CallAsync("thread/read", new { threadId = id, includeTurns = false });
 
     public async Task LoginAsync(Action<Uri> openBrowser, CancellationToken cancellationToken)
     {
@@ -107,7 +116,7 @@ internal sealed class CodexAppServerClient(string? isolatedHome = null)
             {
                 var psi = new ProcessStartInfo
                 {
-                    FileName = CodexLocator.FindCodex(),
+                    FileName = executablePath ?? CodexLocator.FindCodex(),
                     Arguments = "app-server --stdio",
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
@@ -125,6 +134,7 @@ internal sealed class CodexAppServerClient(string? isolatedHome = null)
                     psi.Environment["CODEX_HOME"] = isolatedHome;
                     psi.Environment.Remove("OPENAI_API_KEY");
                     psi.Environment.Remove("CODEX_API_KEY");
+                    psi.Environment.Remove("CODEX_ACCESS_TOKEN");
                     psi.Environment.Remove("CODEX_MANAGED_BY_NPM");
                 }
 
@@ -185,7 +195,7 @@ internal sealed class CodexAppServerClient(string? isolatedHome = null)
             var line = JsonSerializer.Serialize(payload);
             _proc.StandardInput.WriteLine(line);
             _proc.StandardInput.Flush(); // redirected stdin is not auto-flushed
-            Trace($"tx id={id} {method}: {line}");
+            Trace($"tx id={id} {method}");
         }
 
         var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeout)).ConfigureAwait(false);
@@ -216,7 +226,8 @@ internal sealed class CodexAppServerClient(string? isolatedHome = null)
                 {
                     continue;
                 }
-                Trace($"rx: {line}");
+                // Authentication responses and login requests can contain tokens.
+                // Never log protocol bodies, including malformed input.
 
                 JsonDocument doc;
                 try
@@ -225,7 +236,7 @@ internal sealed class CodexAppServerClient(string? isolatedHome = null)
                 }
                 catch (JsonException)
                 {
-                    Trace($"rx: not JSON: {line}");
+                    Trace("rx: invalid JSON");
                     continue;
                 }
 
@@ -363,6 +374,21 @@ internal sealed class CodexAppServerClient(string? isolatedHome = null)
 /// </summary>
 internal static class CodexLocator
 {
+    public static string FindDesktopCodex()
+    {
+        var manager = new Windows.Management.Deployment.PackageManager();
+        var package = manager.FindPackagesForUser(string.Empty)
+            .Where(p => p.Id.Name == "OpenAI.Codex")
+            .OrderByDescending(p => p.Id.Version.Major)
+            .ThenByDescending(p => p.Id.Version.Minor)
+            .ThenByDescending(p => p.Id.Version.Build)
+            .ThenByDescending(p => p.Id.Version.Revision)
+            .FirstOrDefault();
+        var exe = package is null ? null : Path.Combine(package.InstalledLocation.Path, "app", "resources", "codex.exe");
+        return exe is not null && File.Exists(exe) ? exe
+            : throw new AccountSwitchException("未找到已安装的 Codex 桌面端后台，无法验证真实账号切换。");
+    }
+
     public static string FindCodex()
     {
         string? overridePath = Environment.GetEnvironmentVariable("CODEX_PATH");

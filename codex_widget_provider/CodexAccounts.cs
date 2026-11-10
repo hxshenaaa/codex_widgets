@@ -74,6 +74,12 @@ internal sealed record SavedCodexAccount(
 internal sealed record CodexAccountProfile(string Key, CodexIdentity? Identity, string Label,
     DateTimeOffset? LastRefresh, AccountUsageSnapshot? Usage, string? Error);
 
+internal sealed record CodexSwitchReceipt(string SwitchId, CodexIdentity? Source, CodexIdentity Target,
+    DateTimeOffset NativeVerifiedAt, bool DesktopVerified, LocalThreadChange[] Changes,
+    string[] ProjectIds, string[] MissingThreadIdsBeforeSwitch);
+
+internal enum CodexSwitchResult { AlreadyCurrent, Cancelled, Switched }
+
 internal sealed class CodexAccounts
 {
     private const int AuthLimit = 1024 * 1024;
@@ -81,28 +87,18 @@ internal sealed class CodexAccounts
     private readonly string _authPath;
     private readonly string _statePath;
     private readonly string _storeDirectory;
-    private readonly Func<bool> _isCodexRunning;
-    private readonly Func<SavedCodexAccount, bool, bool, Task<AccountInspection>> _inspect;
 
     public static string CodexHome => Environment.GetEnvironmentVariable("CODEX_HOME") is { Length: > 0 } home
         ? Path.GetFullPath(home)
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
 
     public CodexAccounts()
-        : this(CodexHome, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CodexUsageWidget", "accounts"), IsCodexRunning)
     {
-    }
-
-    internal CodexAccounts(string codexHome, string storeDirectory, Func<bool> isCodexRunning,
-        Func<SavedCodexAccount, bool, bool, Task<AccountInspection>>? inspect = null)
-    {
+        var codexHome = CodexHome;
         _authPath = Path.Combine(codexHome, "auth.json");
         _statePath = Path.Combine(codexHome, ".codex-global-state.json");
-        _storeDirectory = storeDirectory;
-        _isCodexRunning = isCodexRunning;
-        _inspect = inspect ?? ((account, refresh, usage) =>
-            CodexAccountConnection.InspectAsync(_storeDirectory, account, refresh, usage));
+        _storeDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CodexUsageWidget", "accounts");
     }
 
     public SavedCodexAccount? ReadCurrent()
@@ -157,7 +153,7 @@ internal sealed class CodexAccounts
             try
             {
                 var account = ReadSaved(AccountPath(profile.Identity));
-                var inspection = await _inspect(account, false, true);
+                var inspection = await CodexAccountConnection.InspectAsync(_storeDirectory, account, false, true);
                 RememberInspection(account, inspection);
             }
             catch (Exception ex) when (IsProfileReadError(ex))
@@ -174,21 +170,77 @@ internal sealed class CodexAccounts
         File.Delete(ProfilePath(key));
     }
 
-    public async Task<bool> SwitchToAsync(CodexIdentity targetIdentity, bool inheritProjects)
+    public bool HasSwitchReceipt => File.Exists(Path.Combine(_storeDirectory, "last-switch.json"));
+
+    public async Task<string> VerifyLastSwitchAsync()
     {
         using var runtime = LockRuntime();
         using var gate = LockStore();
-        var source = ReadCurrent();
-        if (source?.Identity == targetIdentity)
-            return false;
+        var path = Path.Combine(_storeDirectory, "last-switch.json");
+        var bytes = ReadFile(path, StateLimit) ?? throw new AccountSwitchException("没有待验证的切换记录。");
+        var receipt = JsonSerializer.Deserialize<CodexSwitchReceipt>(bytes)
+            ?? throw new AccountSwitchException("切换记录不可读。");
+        var current = ReadCurrent();
+        if (current?.Identity != receipt.Target)
+            throw new AccountSwitchException("当前登录与上次切换目标不同，桌面验收未通过。");
+        var processes = Process.GetProcessesByName("ChatGPT");
+        try
+        {
+            if (!processes.Any(p => !p.HasExited && p.SessionId == Process.GetCurrentProcess().SessionId))
+                throw new AccountSwitchException("请先重新打开 Codex 并等待项目加载，然后再验证。");
+        }
+        finally { foreach (var process in processes) process.Dispose(); }
+        var state = ReadFile(_statePath, StateLimit) ?? throw new AccountSwitchException("无法读取桌面状态。");
+        using var document = JsonDocument.Parse(state);
+        var identity = document.RootElement.GetProperty("electron-persisted-atom-state").GetProperty("local-document-identity");
+        if (identity.GetProperty("accountId").GetString() != receipt.Target.AccountId ||
+            identity.GetProperty("userId").GetString() != receipt.Target.UserId)
+            throw new AccountSwitchException("桌面仍未加载目标账号，不能确认切换成功。");
+        var home = Path.GetDirectoryName(_authPath)!;
+        var plan = new CodexLocalThreads(Path.Combine(home, "state_5.sqlite"), receipt.Target,
+            receipt.Changes, receipt.ProjectIds, receipt.MissingThreadIdsBeforeSwitch);
+        await CodexNativeAccount.VerifyAsync(home, current);
+        if (receipt.ProjectIds.Length > 0 || receipt.Changes.Length > 0)
+        {
+            plan.Verify();
+            await CodexNativeAccount.VerifyProjectsAsync(home, current, plan);
+        }
+        ReplaceIfUnchanged(path, JsonSerializer.SerializeToUtf8Bytes(receipt with { DesktopVerified = true }), bytes, StateLimit);
+        var missing = receipt.MissingThreadIdsBeforeSwitch.Length;
+        return $"验收通过：{current.Email}；{receipt.ProjectIds.Length} 个本地项目、{receipt.Changes.Length} 条现存项目会话已逐条核对。" +
+            (missing > 0 ? $" 另有 {missing} 条旧索引在切换前已无本地会话记录。" : "");
+    }
 
-        EnsureClosed();
+    public async Task<CodexSwitchResult> SwitchToAsync(CodexIdentity targetIdentity, bool inheritProjects,
+        Func<bool, bool> confirmSwitch)
+    {
+        using var runtime = LockRuntime();
+        using var gate = LockStore();
+        if (ReadCurrent()?.Identity == targetIdentity)
+            return CodexSwitchResult.AlreadyCurrent;
         var target = ReadSaved(AccountPath(targetIdentity));
         if (target.Identity != targetIdentity)
             throw new AccountSwitchException("保存的登录与所选账号不一致，请删除该记录并重新保存。");
 
+        // Holding the runtime lock keeps the widget's own app-server out of the
+        // confirmed shutdown list while the user decides whether to continue.
+        var processes = new CodexSwitchProcesses(CodexLocator.FindDesktopCodex(), CodexLocator.FindCodex());
+        using (var running = processes.Capture(prepareToStop: true))
+        {
+            if (!confirmSwitch(running.Count > 0)) return CodexSwitchResult.Cancelled;
+            if (running.Count > 0) await running.StopAsync();
+        }
+        processes.EnsureClosed();
+        var source = ReadCurrent(); // Native shutdown can save newer credentials.
+        if (source?.Identity == targetIdentity) return CodexSwitchResult.AlreadyCurrent;
+        var home = Path.GetDirectoryName(_authPath)!;
+        if (source is not null)
+            await CodexNativeAccount.VerifyAsync(home, source);
+        processes.EnsureClosed();
+
         byte[]? state = null;
         byte[]? inherited = null;
+        CodexLocalThreads? localThreads = null;
         if (inheritProjects)
         {
             if (source is null)
@@ -196,13 +248,8 @@ internal sealed class CodexAccounts
             state = ReadFile(_statePath, StateLimit)
                 ?? throw new AccountSwitchException("未找到桌面项目状态。请先仅切换到目标账号，启动 Codex 初始化后再退出。");
             inherited = CodexProjectState.Inherit(state, source.Identity, target.Identity);
+            localThreads = CodexLocalThreads.Capture(home, state, source.Identity, target.Identity);
         }
-
-        var inspection = await _inspect(target, true, false);
-        RememberInspection(target, inspection);
-        if (inspection.Error is not null || inspection.Usage is null)
-            throw new AccountSwitchException(inspection.Error ?? "目标账号尚未验证，切换已停止。");
-        target = inspection.Credentials;
 
         if (source is not null)
         {
@@ -211,38 +258,75 @@ internal sealed class CodexAccounts
             else
                 Save(source);
         }
-        EnsureClosed();
+        processes.EnsureClosed();
         EnsureUnchanged(_authPath, source?.Credentials, AuthLimit);
+        // This encrypted journal preserves original assignments and a recoverable
+        // pre-switch snapshot. It is written before any native state is changed.
+        var switchId = Guid.NewGuid().ToString("N");
+        var journal = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Source = source?.Identity, Target = target.Identity,
+            SourceAuth = source?.Credentials, StateBefore = state,
+            Changes = localThreads?.Changes, StartedAt = DateTimeOffset.UtcNow,
+        });
+        var encryptedJournal = ProtectedData.Protect(journal, null, DataProtectionScope.CurrentUser);
+        var journalPath = Path.Combine(_storeDirectory, $"switch-{switchId}.backup");
+        ReplaceIfUnchanged(journalPath, encryptedJournal, null, StateLimit * 2, protectNewFile: true);
         if (inherited is not null)
             ReplaceIfUnchanged(_statePath, inherited, state, StateLimit);
 
+        var threadsApplied = false;
+        var authWritten = false;
         try
         {
-            EnsureClosed();
+            processes.EnsureClosed();
             if (inheritProjects)
                 EnsureUnchanged(_statePath, inherited ?? state, StateLimit);
+            localThreads?.Apply();
+            threadsApplied = localThreads is not null;
             ReplaceIfUnchanged(_authPath, target.Credentials, source?.Credentials, AuthLimit, protectNewFile: true);
+            authWritten = true;
+            await CodexNativeAccount.VerifyAsync(home, target);
+            processes.EnsureClosed();
+            localThreads?.Verify();
+            if (localThreads is not null)
+                await CodexNativeAccount.VerifyProjectsAsync(home, target, localThreads);
         }
-        catch (Exception ex) when (inherited is not null)
+        catch (Exception ex)
         {
             try
             {
-                EnsureClosed();
-                EnsureUnchanged(_authPath, source?.Credentials, AuthLimit);
-                ReplaceIfUnchanged(_statePath, state!, inherited, StateLimit);
+                processes.EnsureClosed();
+                if (authWritten)
+                {
+                    var actual = ReadCurrent();
+                    if (actual?.Identity != target.Identity)
+                        throw new AccountSwitchException("回滚前登录身份已被其他程序更改。");
+                    Save(actual); // preserve a refresh made by native startup
+                    if (source is null)
+                    {
+                        EnsureUnchanged(_authPath, actual.Credentials, AuthLimit);
+                        File.Delete(_authPath);
+                    }
+                    else ReplaceIfUnchanged(_authPath, source.Credentials, actual.Credentials, AuthLimit, protectNewFile: true);
+                }
+                else EnsureUnchanged(_authPath, source?.Credentials, AuthLimit);
+                if (threadsApplied) localThreads!.Rollback();
+                if (inherited is not null)
+                    ReplaceIfUnchanged(_statePath, state!, inherited, StateLimit);
             }
-            catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException or AccountSwitchException)
+            catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
             {
-                throw new AccountSwitchException("切换中断，目标账号可能已收到项目索引。请关闭 Codex 后重试。", ex);
+                throw new AccountSwitchException($"切换未通过验证且未能完整回滚。请保持 Codex 关闭。恢复备份编号：{switchId}", ex);
             }
-
-            throw;
+            throw new AccountSwitchException("切换未通过验证，已恢复原账号、项目和会话归属。", ex);
         }
 
         try
         {
-            EnsureClosed();
-            EnsureUnchanged(_authPath, target.Credentials, AuthLimit);
+            processes.EnsureClosed();
+            if (ReadCurrent()?.Identity != target.Identity)
+                throw new AccountSwitchException("切换后登录身份已发生变化。");
             if (inheritProjects)
                 EnsureUnchanged(_statePath, inherited ?? state, StateLimit);
         }
@@ -251,34 +335,17 @@ internal sealed class CodexAccounts
             throw new AccountSwitchException("切换期间 Codex 已启动或写入状态。请确认当前登录和项目归属后再继续。", ex);
         }
 
-        return true;
-    }
-
-    private void EnsureClosed()
-    {
-        if (_isCodexRunning())
-            throw new AccountSwitchException("请正常退出 ChatGPT 桌面端和 Codex CLI，等待所有任务结束后再切换。");
-    }
-
-    private static bool IsCodexRunning()
-    {
-        using var current = Process.GetCurrentProcess();
-        foreach (var name in new[] { "ChatGPT", "Codex", "codex-app-server" })
+        var receipt = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            var processes = Process.GetProcessesByName(name);
-            try
-            {
-                if (processes.Any(process => !process.HasExited && process.SessionId == current.SessionId))
-                    return true;
-            }
-            finally
-            {
-                foreach (var process in processes)
-                    process.Dispose();
-            }
-        }
-
-        return false;
+            SwitchId = switchId, Source = source?.Identity, Target = target.Identity,
+            NativeVerifiedAt = DateTimeOffset.UtcNow, DesktopVerified = false,
+            Changes = localThreads?.Changes ?? [],
+            ProjectIds = localThreads?.ProjectIds ?? [],
+            MissingThreadIdsBeforeSwitch = localThreads?.MissingThreadIds ?? [],
+        });
+        var receiptPath = Path.Combine(_storeDirectory, "last-switch.json");
+        ReplaceIfUnchanged(receiptPath, receipt, ReadFile(receiptPath, StateLimit), StateLimit);
+        return CodexSwitchResult.Switched;
     }
 
     // The widget and the Start menu app run in separate processes. Hold this

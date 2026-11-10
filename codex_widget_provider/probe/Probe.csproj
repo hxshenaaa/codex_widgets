@@ -20,9 +20,13 @@
   <ItemGroup>
     <Compile Include="..\CodexAppServerClient.cs" Link="CodexAppServerClient.cs" />
     <Compile Include="..\CodexAccounts.cs" Link="CodexAccounts.cs" />
+    <Compile Include="..\CodexNativeAccount.cs" Link="CodexNativeAccount.cs" />
+    <Compile Include="..\CodexLocalThreads.cs" Link="CodexLocalThreads.cs" />
+    <Compile Include="..\CodexSwitchProcesses.cs" Link="CodexSwitchProcesses.cs" />
     <Compile Include="..\CodexAccountConnection.cs" Link="CodexAccountConnection.cs" />
     <Compile Include="..\CodexProjectState.cs" Link="CodexProjectState.cs" />
     <Compile Include="..\CodexUsageService.cs" Link="CodexUsageService.cs" />
+    <Compile Include="..\TokenActivityReader.cs" Link="TokenActivityReader.cs" />
     <Compile Include="..\WebWidgetPage.cs" Link="WebWidgetPage.cs" />
     <Content Include="..\Assets\Weekly.png" Link="Assets\Weekly.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

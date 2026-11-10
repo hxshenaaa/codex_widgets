@@ -20,6 +20,7 @@ internal sealed class CodexAccountsDialog : Form
     private readonly Button _switch = new() { Text = "切换并保留项目", AutoSize = true };
     private readonly Button _switchOnly = new() { Text = "仅切换账号", AutoSize = true };
     private readonly Button _forget = new() { Text = "移除记录", AutoSize = true };
+    private readonly Button _verify = new() { Text = "验证切换结果", AutoSize = true };
     private readonly Button _cancel = new() { Text = "取消", AutoSize = true, Visible = false };
     private SavedCodexAccount? _current;
     private CancellationTokenSource? _cancelSource;
@@ -137,7 +138,7 @@ internal sealed class CodexAccountsDialog : Form
         {
             AutoSize = true,
             MaximumSize = new Size(800, 0),
-            Text = "先收录当前登录或添加账号。新账号需仅切换一次，打开原生 Codex 初始化后再退出。切换前请退出 Codex 桌面端和 CLI。",
+            Text = "先收录当前登录或添加账号。新账号需先用「仅切换账号」激活，再打开原生 Codex 初始化。",
         }, 0, 0);
         _list.Columns.Add("账号和工作区", 255);
         _list.Columns.Add("状态 / 套餐", 120);
@@ -148,7 +149,7 @@ internal sealed class CodexAccountsDialog : Form
         _list.ShowItemToolTips = true;
         layout.Controls.Add(_list, 0, 1);
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-        buttons.Controls.AddRange([_add, _save, _refresh, _switch, _switchOnly, _forget, _cancel]);
+        buttons.Controls.AddRange([_add, _save, _refresh, _switch, _switchOnly, _verify, _forget, _cancel]);
         layout.Controls.Add(_detail, 0, 2);
         layout.Controls.Add(buttons, 0, 3);
         layout.Controls.Add(_status, 0, 4);
@@ -190,6 +191,8 @@ internal sealed class CodexAccountsDialog : Form
         }, "正在读取各账号额度与用量…", cancellable: true);
         _switch.Click += async (_, _) => await SwitchAsync(inheritProjects: true);
         _switchOnly.Click += async (_, _) => await SwitchAsync(inheritProjects: false);
+        _verify.Click += async (_, _) => await RunAsync(_ => Task.Run(_accounts.VerifyLastSwitchAsync),
+            "正在核对桌面身份、原项目和原会话…");
         _forget.Click += async (_, _) =>
         {
             if (Selected is not { Saved: true } row ||
@@ -221,14 +224,30 @@ internal sealed class CodexAccountsDialog : Form
         if (Selected?.Profile is not { Identity: { } identity } profile)
             return;
         var action = inheritProjects ? "切换并保留本地项目" : "仅切换账号";
-        if (MessageBox.Show(this, $"{action}到 {profile.Label}？", Text,
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-            return;
         await RunAsync(async _ =>
         {
-            var changed = await Task.Run(() => _accounts.SwitchToAsync(identity, inheritProjects));
-            return changed ? "切换完成。可以重新打开 Codex。" : "已是当前账号。";
-        }, "正在验证目标账号并准备切换…");
+            var result = await Task.Run(() => _accounts.SwitchToAsync(identity, inheritProjects, running =>
+                (bool)Invoke(() => ConfirmSwitch(action, profile.Label, running))));
+            return result switch
+            {
+                CodexSwitchResult.Switched => inheritProjects
+                    ? "账号已切换，原项目会话已核对。请重新打开 Codex。"
+                    : "账号已切换。请重新打开 Codex。",
+                CodexSwitchResult.Cancelled => "已取消切换。",
+                _ => "已是当前账号。",
+            };
+        }, "正在准备切换…");
+    }
+
+    private bool ConfirmSwitch(string action, string label, bool running)
+    {
+        var prompt = $"{action}到 {label}？";
+        if (running)
+            prompt += "\n\n确认后将关闭 Codex 桌面端及命令行进程，必要时会强制结束。正在进行的任务会停止，未保存的操作可能丢失。";
+        var confirmed = MessageBox.Show(this, prompt, Text, MessageBoxButtons.YesNo,
+            running ? MessageBoxIcon.Warning : MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        if (confirmed && running) _status.Text = "正在关闭 Codex…";
+        return confirmed;
     }
 
     private Row? Selected => _list.SelectedItems.Count == 1 ? _list.SelectedItems[0].Tag as Row : null;
@@ -353,7 +372,7 @@ internal sealed class CodexAccountsDialog : Form
 
     private static bool IsRecoverable(Exception ex) => ex is AccountSwitchException or CryptographicException or
         IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or
-        OperationCanceledException or InvalidOperationException;
+        OperationCanceledException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException;
 
     private static string ErrorMessage(Exception ex) => ex switch
     {
@@ -374,6 +393,7 @@ internal sealed class CodexAccountsDialog : Form
         _switch.Enabled = !_busy && target && _current is not null;
         _switchOnly.Enabled = !_busy && target;
         _forget.Enabled = !_busy && selected is { Saved: true };
+        _verify.Enabled = !_busy && _accounts.HasSwitchReceipt;
         _cancel.Visible = _cancelSource is not null;
     }
 }

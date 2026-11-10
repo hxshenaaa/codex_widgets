@@ -22,6 +22,58 @@ internal static class CodexProjectState
     private const string MigrationMap = "app-server-project-id-by-legacy-project-id-by-host";
     private const string MigrationFlags = "app-server-projects-migration-by-host";
 
+    // Resolve legacy sidebar assignments to existing native project IDs. Only
+    // the local host is eligible; remote and ChatGPT projects are not local DB rows.
+    internal static Dictionary<string, string> LocalAssignments(byte[] state, CodexIdentity identity)
+    {
+        var globals = GlobalsFor(state, identity);
+        var projects = GetMap(globals, Projects);
+        var hosts = GetMap(globals, "thread-project-membership-host-ids");
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (threadId, value) in GetMap(globals, Assignments))
+        {
+            var assignment = RequireObject(value);
+            var projectId = assignment["projectId"]?.GetValue<string>();
+            if (assignment["projectKind"]?.GetValue<string>() != "local" ||
+                projectId is null || !projects.ContainsKey(projectId)) continue;
+            var host = hosts[threadId]?.GetValue<string>();
+            if (host is not null && host != "local" && !host.StartsWith("local:", StringComparison.Ordinal)) continue;
+            result[threadId] = NativeProjectId(globals, projectId);
+        }
+        return result;
+    }
+
+    internal static string[] LocalProjectIds(byte[] state, CodexIdentity identity)
+    {
+        var globals = GlobalsFor(state, identity);
+        return GetMap(globals, Projects).Select(pair => NativeProjectId(globals, pair.Key)).ToArray();
+    }
+
+    private static string NativeProjectId(JsonObject globals, string projectId)
+    {
+        var candidates = GetMap(globals, MigrationMap)
+            .Where(pair => pair.Key == "local" || pair.Key.StartsWith("local:", StringComparison.Ordinal))
+            .Select(pair => RequireObject(pair.Value)[projectId]?.GetValue<string>())
+            .Where(id => id is not null).Distinct(StringComparer.Ordinal).ToArray();
+        if (candidates.Length > 1) throw Conflict("本地项目迁移映射");
+        return candidates.SingleOrDefault() ?? projectId;
+    }
+
+    private static JsonObject GlobalsFor(byte[] state, CodexIdentity identity)
+    {
+        var root = RequireObject(JsonNode.Parse(state));
+        JsonObject? globals = Matches(root["electron-persisted-atom-state"], identity) ? root : null;
+        foreach (var (_, entry) in RequireObject(root["electron-account-renderer-state-v1"]?["inactive"]))
+        {
+            var slot = RequireObject(entry);
+            if (!Matches(slot["atoms"], identity)) continue;
+            if (globals is not null) throw Incompatible();
+            globals = RequireObject(slot["globals"]);
+        }
+        if (globals is null) throw Incompatible();
+        return globals;
+    }
+
     public static byte[]? Inherit(byte[] state, CodexIdentity source, CodexIdentity target)
     {
         try

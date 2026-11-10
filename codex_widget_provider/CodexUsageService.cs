@@ -105,7 +105,8 @@ internal sealed class CodexUsageService
     private CodexIdentity? _historyOwner;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private WidgetDisplayData _current = new();
-    private ParsedSnapshot? _lastParsed;
+    private sealed record RenderSnapshot(ParsedSnapshot Parsed, TokenActivityReader.ActivityResult Activity);
+    private volatile RenderSnapshot? _lastSnapshot;
 
     public WidgetDisplayData Current => _current;
 
@@ -136,17 +137,17 @@ internal sealed class CodexUsageService
             {
                 _history = new History(identity?.StorageKey);
                 _historyOwner = identity;
-                _lastParsed = null;
+                _lastSnapshot = null;
                 _current = new();
             }
 
-            var parsed = SnapshotParser.Parse(result);
-            _lastParsed = parsed;
+            var sessionDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
+            var activity = TokenActivityReader.ReadActivity(sessionDir, DateTimeOffset.UtcNow);
+            var parsed = SnapshotParser.Parse(result, activity.WeekTokens);
 
             // Record the sample before charting so the trend includes the
             // current point (same order as the Python app: add, then chart).
             _history.Add(parsed.PrimaryRemaining, parsed.SecondaryRemaining);
-            var activity = TokenActivityReader.Get24hHourlyActivity();
             parsed.Data.trendCaption = "24h";
             parsed.Data.trendLine = _history.Sparkline(
                 preferSecondary: parsed.PreferSecondary,
@@ -199,6 +200,7 @@ internal sealed class CodexUsageService
                 }
             }
 
+            _lastSnapshot = new RenderSnapshot(parsed, activity);
             _current = parsed.Data;
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 2)
@@ -220,11 +222,11 @@ internal sealed class CodexUsageService
     /// </summary>
     public string GetWebDataJson()
     {
-        var parsed = _lastParsed;
-        var activity = TokenActivityReader.Get24hHourlyActivity();
-        var points = activity.Buckets
+        var snapshot = _lastSnapshot;
+        var parsed = snapshot?.Parsed;
+        var points = snapshot?.Activity.Buckets
             .Select(x => new long[] { x.ts, x.tokens })
-            .ToArray();
+            .ToArray() ?? [];
 
         var data = parsed?.Data ?? new WidgetDisplayData();
         var payload = new
@@ -407,7 +409,7 @@ internal sealed class History
 /// </summary>
 internal static class SnapshotParser
 {
-    public static ParsedSnapshot Parse(JsonElement result)
+    public static ParsedSnapshot Parse(JsonElement result, long machineTokens)
     {
         var snap = SelectSnapshot(result);
         JsonElement? primary = GetWindow(snap, "primary");
@@ -483,8 +485,6 @@ internal static class SnapshotParser
             data.windowLabel = "No quota window";
         }
 
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        long machineTokens = TokenActivityReader.GetTokensInRange(now - 7 * 86400, now);
         data.localUsageLine = $"当前账号已用: {usedPercent}% · 全机近 7 天: {TrendChartRenderer.FormatTokens(machineTokens)}";
         data.hasLocalUsageLine = true;
 
@@ -608,151 +608,6 @@ internal static class SnapshotParser
 
     private static string FormatReset(long unixSeconds) =>
         DateTimeOffset.FromUnixTimeSeconds(unixSeconds).LocalDateTime.ToString("MM'月'dd'日' HH:mm");
-}
-
-internal static class TokenActivityReader
-{
-    private static readonly string s_sessionDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".codex", "sessions");
-
-    public record ActivityResult(List<(long ts, long tokens)> Buckets, long MaxTokens, long TotalTokens);
-
-    public static ActivityResult Get24hHourlyActivity()
-    {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        long cutoff = now - 24 * 3600;
-        var buckets = new long[24];
-
-        if (Directory.Exists(s_sessionDir))
-        {
-            try
-            {
-                var minModified = DateTime.UtcNow.AddHours(-36);
-                var dirInfo = new DirectoryInfo(s_sessionDir);
-                var recentFiles = dirInfo.EnumerateFiles("*.jsonl", SearchOption.AllDirectories)
-                    .Where(f => f.LastWriteTimeUtc >= minModified)
-                    .ToList();
-
-                foreach (var file in recentFiles)
-                {
-                    using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    using var reader = new StreamReader(fs, Encoding.UTF8);
-                    string? line;
-                    while ((line = reader.ReadLine()) != null)
-                    {
-                        if (!line.Contains("\"token_usage_record\"")) continue;
-                        try
-                        {
-                            using var doc = JsonDocument.Parse(line);
-                            var root = doc.RootElement;
-                            if (root.TryGetProperty("timestamp", out var tsProp) &&
-                                root.TryGetProperty("payload", out var payload) &&
-                                payload.TryGetProperty("usage", out var usage) &&
-                                usage.TryGetProperty("total_tokens", out var tokProp))
-                            {
-                                var tsStr = tsProp.GetString();
-                                if (DateTimeOffset.TryParse(tsStr, out var dto))
-                                {
-                                    long unixSec = dto.ToUnixTimeSeconds();
-                                    if (unixSec >= cutoff && unixSec <= now)
-                                    {
-                                        int hr = (int)((unixSec - cutoff) / 3600);
-                                        if (hr >= 0 && hr < 24)
-                                        {
-                                            buckets[hr] += tokProp.GetInt64();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        catch
-                        {
-                            // Skip malformed lines safely
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Reading local session records is best-effort.
-            }
-        }
-
-        long maxTokens = buckets.Length > 0 ? buckets.Max() : 0;
-        long totalTokens = buckets.Sum();
-        var resultList = new List<(long ts, long tokens)>(24);
-        for (int i = 0; i < 24; i++)
-        {
-            long t = cutoff + i * 3600;
-            resultList.Add((t, buckets[i]));
-        }
-        return new ActivityResult(resultList, maxTokens, totalTokens);
-    }
-
-    public static long GetTokensInRange(long startUnixSec, long endUnixSec)
-    {
-        if (!Directory.Exists(s_sessionDir) || startUnixSec >= endUnixSec)
-            return 0;
-
-        long total = 0;
-        try
-        {
-            var minModified = DateTimeOffset.FromUnixTimeSeconds(startUnixSec).UtcDateTime.AddDays(-2);
-            var dirInfo = new DirectoryInfo(s_sessionDir);
-            var files = dirInfo.EnumerateFiles("*.jsonl", SearchOption.AllDirectories)
-                .Where(f => f.LastWriteTimeUtc >= minModified)
-                .ToList();
-
-            foreach (var file in files)
-            {
-                try
-                {
-                    using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    using var reader = new StreamReader(fs, Encoding.UTF8);
-                    string? line;
-                    while ((line = reader.ReadLine()) != null)
-                    {
-                        if (!line.Contains("\"token_usage_record\"")) continue;
-                        try
-                        {
-                            using var doc = JsonDocument.Parse(line);
-                            var root = doc.RootElement;
-                            if (root.TryGetProperty("timestamp", out var tsProp) &&
-                                root.TryGetProperty("payload", out var payload) &&
-                                payload.TryGetProperty("usage", out var usage) &&
-                                usage.TryGetProperty("total_tokens", out var tokProp))
-                            {
-                                var tsStr = tsProp.GetString();
-                                if (DateTimeOffset.TryParse(tsStr, out var dto))
-                                {
-                                    long unixSec = dto.ToUnixTimeSeconds();
-                                    if (unixSec >= startUnixSec && unixSec <= endUnixSec)
-                                    {
-                                        total += tokProp.GetInt64();
-                                    }
-                                }
-                            }
-                        }
-                        catch
-                        {
-                            // Skip malformed lines safely
-                        }
-                    }
-                }
-                catch
-                {
-                    // Skip inaccessible files safely
-                }
-            }
-        }
-        catch
-        {
-            // Reading local session records is best-effort.
-        }
-
-        return total;
-    }
 }
 
 internal static class TrendChartRenderer
@@ -960,7 +815,7 @@ internal static class RecentSessionsReader
                     ? folderName
                     : (!string.IsNullOrEmpty(folderName) ? $"{folderName} ({branch})" : branch);
 
-                long tokens = GetThreadTokens(sessionFile);
+                long tokens = TokenActivityReader.ReadThreadTokens(sessionFile);
 
                 result.Add(new RecentSessionItem
                 {
@@ -977,41 +832,6 @@ internal static class RecentSessionsReader
         }
 
         return result;
-    }
-
-    private static long GetThreadTokens(string sessionFile)
-    {
-        try
-        {
-            long tokens = 0;
-            using var stream = File.Open(sessionFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-            string? line;
-            while ((line = reader.ReadLine()) != null)
-            {
-                if (!line.Contains("\"token_usage_record\"")) continue;
-                try
-                {
-                    using var doc = JsonDocument.Parse(line);
-                    var root = doc.RootElement;
-                    if (root.TryGetProperty("payload", out var payload) &&
-                        payload.TryGetProperty("usage", out var usage) &&
-                        usage.TryGetProperty("total_tokens", out var tokProp))
-                    {
-                        tokens += tokProp.GetInt64();
-                    }
-                }
-                catch
-                {
-                    // Skip malformed lines safely
-                }
-            }
-            return tokens;
-        }
-        catch
-        {
-            return 0;
-        }
     }
 
     private static string FormatSessionTime(long unixSec)

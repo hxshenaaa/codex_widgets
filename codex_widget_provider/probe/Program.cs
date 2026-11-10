@@ -7,9 +7,6 @@ internal static class ProbeProgram
 {
     private static async Task<int> Main(string[] args)
     {
-        if (args is ["--account-smoke"])
-            return AccountSwitchSmoke.Run();
-
         if (args.Length >= 2 && args[0] == "page")
         {
             return WritePageTest(args[1]);

@@ -33,6 +33,7 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
     private static readonly object s_timerGate = new();
     private static readonly object s_reminderGate = new();
     private static System.Threading.Timer? s_refreshTimer;
+    private static int s_refreshInProgress;
 
     public static ManualResetEvent GetEmptyWidgetListEvent() => s_emptyWidgetListEvent;
 
@@ -213,6 +214,13 @@ internal class WidgetProvider : IWidgetProvider, IWidgetResourceProvider
     }
 
     private static async Task RefreshAndPushAsync()
+    {
+        if (Interlocked.Exchange(ref s_refreshInProgress, 1) != 0) return;
+        try { await RefreshAndPushCoreAsync(); }
+        finally { Volatile.Write(ref s_refreshInProgress, 0); }
+    }
+
+    private static async Task RefreshAndPushCoreAsync()
     {
         WidgetDisplayData data;
         try
