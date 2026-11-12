@@ -14,7 +14,8 @@ internal sealed class CodexAccountsDialog : Form
     };
     private readonly Label _status = new() { AutoSize = true, MaximumSize = new Size(800, 0) };
     private readonly Label _detail = new() { AutoSize = true, MaximumSize = new Size(800, 0) };
-    private readonly Button _add = new() { Text = "添加账号", AutoSize = true };
+    private readonly Label _accountHint = new() { AutoSize = true, MaximumSize = new Size(800, 0) };
+    private readonly Button _add = new() { Text = "添加额度账号", AutoSize = true };
     private readonly Button _save = new() { Text = "收录当前账号", AutoSize = true };
     private readonly Button _refresh = new() { Text = "刷新额度与用量", AutoSize = true };
     private readonly Button _switch = new() { Text = "切换并保留项目", AutoSize = true };
@@ -23,6 +24,7 @@ internal sealed class CodexAccountsDialog : Form
     private readonly Button _verify = new() { Text = "验证切换结果", AutoSize = true };
     private readonly Button _cancel = new() { Text = "取消", AutoSize = true, Visible = false };
     private SavedCodexAccount? _current;
+    private CodexProjectLayout? _projectLayout;
     private CancellationTokenSource? _cancelSource;
     private bool _currentSaved;
     private bool _busy;
@@ -134,12 +136,7 @@ internal sealed class CodexAccountsDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(new Label
-        {
-            AutoSize = true,
-            MaximumSize = new Size(800, 0),
-            Text = "先收录当前登录或添加账号。新账号需先用「仅切换账号」激活，再打开原生 Codex 初始化。",
-        }, 0, 0);
+        layout.Controls.Add(_accountHint, 0, 0);
         _list.Columns.Add("账号和工作区", 255);
         _list.Columns.Add("状态 / 套餐", 120);
         _list.Columns.Add("5 小时剩余 / 重置", 120);
@@ -182,7 +179,7 @@ internal sealed class CodexAccountsDialog : Form
         _add.Click += async (_, _) => await RunAsync(async token =>
         {
             await Task.Run(() => _accounts.AddAccountAsync(token));
-            return "已添加账号。首次使用请选「仅切换账号」，再打开原生 Codex 初始化。";
+            return "已添加额度账号。";
         }, "请在浏览器完成官方登录…", cancellable: true);
         _refresh.Click += async (_, _) => await RunAsync(async token =>
         {
@@ -277,6 +274,7 @@ internal sealed class CodexAccountsDialog : Form
 
             SavedCodexAccount? current = null;
             string? loginError = null;
+            _projectLayout = null;
             try
             {
                 current = await Task.Run(_accounts.ReadCurrent);
@@ -287,6 +285,9 @@ internal sealed class CodexAccountsDialog : Form
             {
                 loginError = ErrorMessage(ex);
             }
+
+            try { _projectLayout = await Task.Run(_accounts.ReadProjectLayout); }
+            catch (Exception ex) when (IsRecoverable(ex)) { loginError ??= ErrorMessage(ex); }
 
             var saved = await Task.Run(_accounts.ListSaved);
             Render(current, saved);
@@ -386,14 +387,22 @@ internal sealed class CodexAccountsDialog : Form
     {
         var selected = Selected;
         var target = selected is { Saved: true, Profile.Identity: { } identity } && identity != _current?.Identity;
+        var legacy = _projectLayout == CodexProjectLayout.AccountScoped;
+        var canSwitchOnly = _projectLayout is CodexProjectLayout.AccountScoped or CodexProjectLayout.Unknown;
+        _accountHint.Text = canSwitchOnly
+            ? "收录当前账号或添加额度账号。旧版 Codex 的新登录可用「仅切换账号」初始化。"
+            : "收录当前账号或添加额度账号。登录切换请使用 Codex 的账号菜单。";
+        _switch.Visible = legacy;
+        _switchOnly.Visible = canSwitchOnly;
+        _verify.Visible = canSwitchOnly;
         _list.Enabled = !_busy;
         _add.Enabled = !_busy;
         _save.Enabled = !_busy && _current is not null;
         _refresh.Enabled = !_busy && _list.Items.Cast<ListViewItem>().Any(item => ((Row)item.Tag!).Saved);
-        _switch.Enabled = !_busy && target && _current is not null;
-        _switchOnly.Enabled = !_busy && target;
+        _switch.Enabled = !_busy && legacy && target && _current is not null;
+        _switchOnly.Enabled = !_busy && canSwitchOnly && target;
         _forget.Enabled = !_busy && selected is { Saved: true };
-        _verify.Enabled = !_busy && _accounts.HasSwitchReceipt;
+        _verify.Enabled = !_busy && canSwitchOnly && _accounts.HasSwitchReceipt;
         _cancel.Visible = _cancelSource is not null;
     }
 }

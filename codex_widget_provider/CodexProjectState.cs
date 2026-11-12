@@ -12,15 +12,45 @@ internal sealed record CodexIdentity(string AccountId, string UserId)
 internal sealed class AccountSwitchException(string message, Exception? inner = null)
     : InvalidOperationException(message, inner);
 
+internal enum CodexProjectLayout { Unknown, AccountScoped, Shared }
+
 // The local-project inheritance algorithm is adapted from Poteto's MIT-licensed
 // LocalProjectLayout and NativeProjectState (see THIRD_PARTY_NOTICES.md).
 internal static class CodexProjectState
 {
+    private const string RendererSlots = "electron-account-renderer-state-v1";
+    private const string ContentOwner = "electron-renderer-content-owner";
+    private const string OwnerAtoms = "electron-owner-atoms:";
+    private const string PersistedAtoms = "electron-persisted-atom-state";
     private const string Projects = "local-projects";
     private const string Assignments = "thread-project-assignments";
     private const string ThreadOrder = "sidebar-project-thread-orders";
     private const string MigrationMap = "app-server-project-id-by-legacy-project-id-by-host";
     private const string MigrationFlags = "app-server-projects-migration-by-host";
+
+    internal static CodexProjectLayout ReadLayout(byte[]? state)
+    {
+        if (state is null) return CodexProjectLayout.Unknown;
+        try
+        {
+            return JsonNode.Parse(state) is JsonObject root ? LayoutOf(root) : CodexProjectLayout.Unknown;
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException)
+        {
+            return CodexProjectLayout.Unknown;
+        }
+    }
+
+    private static CodexProjectLayout LayoutOf(JsonObject root)
+    {
+        // Owner-scoped preferences can also be present when signed out.
+        if (root.ContainsKey(ContentOwner) || root.Any(pair => pair.Key.StartsWith(OwnerAtoms, StringComparison.Ordinal)))
+            return CodexProjectLayout.Shared;
+        return root[RendererSlots] is JsonObject ? CodexProjectLayout.AccountScoped : CodexProjectLayout.Unknown;
+    }
+
+    internal static AccountSwitchException UseNativeSwitch() =>
+        new("当前 Codex 共用本地项目和会话。请在 Codex 的账号菜单中切换。");
 
     // Resolve legacy sidebar assignments to existing native project IDs. Only
     // the local host is eligible; remote and ChatGPT projects are not local DB rows.
@@ -62,8 +92,8 @@ internal static class CodexProjectState
     private static JsonObject GlobalsFor(byte[] state, CodexIdentity identity)
     {
         var root = RequireObject(JsonNode.Parse(state));
-        JsonObject? globals = Matches(root["electron-persisted-atom-state"], identity) ? root : null;
-        foreach (var (_, entry) in RequireObject(root["electron-account-renderer-state-v1"]?["inactive"]))
+        JsonObject? globals = Matches(root[PersistedAtoms], identity) ? root : null;
+        foreach (var (_, entry) in RequireObject(root[RendererSlots]?["inactive"]))
         {
             var slot = RequireObject(entry);
             if (!Matches(slot["atoms"], identity)) continue;
@@ -72,6 +102,12 @@ internal static class CodexProjectState
         }
         if (globals is null) throw Incompatible();
         return globals;
+    }
+
+    internal static bool IsActiveAccount(byte[] state, CodexIdentity identity)
+    {
+        var root = RequireObject(JsonNode.Parse(state));
+        return Matches(root[PersistedAtoms], identity);
     }
 
     public static byte[]? Inherit(byte[] state, CodexIdentity source, CodexIdentity target)
@@ -90,7 +126,10 @@ internal static class CodexProjectState
     private static byte[]? InheritCore(byte[] state, CodexIdentity source, CodexIdentity target)
     {
         var root = RequireObject(JsonNode.Parse(state));
-        var renderer = RequireObject(root["electron-account-renderer-state-v1"]);
+        if (LayoutOf(root) == CodexProjectLayout.Shared)
+            throw UseNativeSwitch();
+
+        var renderer = RequireObject(root[RendererSlots]);
         var inactive = RequireObject(renderer["inactive"]);
         if (!renderer.TryGetPropertyValue("owner", out var ownerNode))
             throw Incompatible();
@@ -102,7 +141,7 @@ internal static class CodexProjectState
         JsonObject FindGlobals(CodexIdentity identity)
         {
             var candidates = new List<JsonObject>();
-            if (owner is not null && Matches(root["electron-persisted-atom-state"], identity))
+            if (owner is not null && Matches(root[PersistedAtoms], identity))
                 candidates.Add(root);
 
             foreach (var entry in inactive)
@@ -122,7 +161,7 @@ internal static class CodexProjectState
         if (ReferenceEquals(from, into))
             return null;
         if (owner is not null && !ReferenceEquals(from, root))
-            throw new AccountSwitchException("当前登录与桌面项目状态不一致。请重新打开 Codex，确认当前账号后正常退出。");
+            throw ActiveAccountMismatch();
 
         var previous = (JsonObject)into.DeepClone();
         MergeLocalProjects(into, from);
@@ -304,6 +343,9 @@ internal static class CodexProjectState
 
     private static AccountSwitchException Incompatible() =>
         new("无法识别当前 Codex 的项目状态格式，切换已停止。");
+
+    private static AccountSwitchException ActiveAccountMismatch() =>
+        new("当前登录与桌面项目状态不一致。请重新打开 Codex，确认当前账号后正常退出。");
 
     private static AccountSwitchException Conflict(string label) =>
         new($"两个账号的{label}存在冲突，切换已停止。请先在 Codex 中确认归属。");

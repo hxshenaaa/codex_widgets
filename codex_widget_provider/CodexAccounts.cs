@@ -172,10 +172,15 @@ internal sealed class CodexAccounts
 
     public bool HasSwitchReceipt => File.Exists(Path.Combine(_storeDirectory, "last-switch.json"));
 
+    public CodexProjectLayout ReadProjectLayout() => CodexProjectState.ReadLayout(ReadFile(_statePath, StateLimit));
+
     public async Task<string> VerifyLastSwitchAsync()
     {
         using var runtime = LockRuntime();
         using var gate = LockStore();
+        var state = ReadFile(_statePath, StateLimit) ?? throw new AccountSwitchException("无法读取桌面状态。");
+        if (CodexProjectState.ReadLayout(state) == CodexProjectLayout.Shared)
+            throw CodexProjectState.UseNativeSwitch();
         var path = Path.Combine(_storeDirectory, "last-switch.json");
         var bytes = ReadFile(path, StateLimit) ?? throw new AccountSwitchException("没有待验证的切换记录。");
         var receipt = JsonSerializer.Deserialize<CodexSwitchReceipt>(bytes)
@@ -190,11 +195,7 @@ internal sealed class CodexAccounts
                 throw new AccountSwitchException("请先重新打开 Codex 并等待项目加载，然后再验证。");
         }
         finally { foreach (var process in processes) process.Dispose(); }
-        var state = ReadFile(_statePath, StateLimit) ?? throw new AccountSwitchException("无法读取桌面状态。");
-        using var document = JsonDocument.Parse(state);
-        var identity = document.RootElement.GetProperty("electron-persisted-atom-state").GetProperty("local-document-identity");
-        if (identity.GetProperty("accountId").GetString() != receipt.Target.AccountId ||
-            identity.GetProperty("userId").GetString() != receipt.Target.UserId)
+        if (!CodexProjectState.IsActiveAccount(state, receipt.Target))
             throw new AccountSwitchException("桌面仍未加载目标账号，不能确认切换成功。");
         var home = Path.GetDirectoryName(_authPath)!;
         var plan = new CodexLocalThreads(Path.Combine(home, "state_5.sqlite"), receipt.Target,
@@ -214,6 +215,8 @@ internal sealed class CodexAccounts
     public async Task<CodexSwitchResult> SwitchToAsync(CodexIdentity targetIdentity, bool inheritProjects,
         Func<bool, bool> confirmSwitch)
     {
+        if (ReadProjectLayout() == CodexProjectLayout.Shared)
+            throw CodexProjectState.UseNativeSwitch();
         using var runtime = LockRuntime();
         using var gate = LockStore();
         if (ReadCurrent()?.Identity == targetIdentity)
@@ -233,6 +236,8 @@ internal sealed class CodexAccounts
         processes.EnsureClosed();
         var source = ReadCurrent(); // Native shutdown can save newer credentials.
         if (source?.Identity == targetIdentity) return CodexSwitchResult.AlreadyCurrent;
+        if (ReadProjectLayout() == CodexProjectLayout.Shared)
+            throw CodexProjectState.UseNativeSwitch();
         var home = Path.GetDirectoryName(_authPath)!;
         if (source is not null)
             await CodexNativeAccount.VerifyAsync(home, source);

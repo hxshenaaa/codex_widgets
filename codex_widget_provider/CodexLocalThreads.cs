@@ -64,9 +64,12 @@ internal sealed class CodexLocalThreads(string database, CodexIdentity target, L
 
     private void Write(bool rollback)
     {
+        var pending = Changes.Where(row => row.ProjectId != row.TargetProjectId).ToArray();
+        if (pending.Length == 0) return;
+
         using var connection = Open(database, readOnly: false);
         using var transaction = connection.BeginTransaction();
-        foreach (var row in Changes)
+        foreach (var row in pending)
         {
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
